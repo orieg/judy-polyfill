@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  behavior:
+    name: behavior (PHP ${{ matrix.php-version }}, no extension)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php-version: ["8.1", "8.2", "8.3", "8.4", "8.5"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+      - name: Composer validate
+        run: composer validate --strict
+      - name: Behavior tests (polyfill standalone)
+        run: php tests/behavior.php
+
+  parity:
+    name: parity (PHP ${{ matrix.php-version }}, vs ext-judy)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php-version: ["8.1", "8.2", "8.3", "8.4", "8.5"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php-version }}
+      - name: Install ext-judy via PIE
+        run: |
+          sudo apt-get update && sudo apt-get install -y libjudy-dev
+          curl -fsSL https://github.com/php/pie/releases/latest/download/pie.phar \
+            -o /usr/local/bin/pie && chmod +x /usr/local/bin/pie
+          sudo pie install orieg/judy --with-judy=/usr
+          php -r 'echo "ext-judy ", judy_version(), PHP_EOL;'
+      - name: Parity tests (polyfill vs native)
+        run: php tests/parity.php
+      - name: Behavior tests (with extension loaded)
+        run: php tests/behavior.php

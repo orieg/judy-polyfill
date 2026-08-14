@@ -1,0 +1,42 @@
+{
+    "name": "orieg/judy-polyfill",
+    "description": "Pure-PHP polyfill for the Judy extension (sparse dynamic arrays). Provides the Judy class API when ext-judy is not installed.",
+    "keywords": [
+        "judy",
+        "judy-arrays",
+        "polyfill",
+        "sparse-array",
+        "data-structures",
+        "compatibility"
+    ],
+    "type": "library",
+    "license": "MIT",
+    "homepage": "https://github.com/orieg/judy-polyfill",
+    "authors": [
+        {
+            "name": "Nicolas Brousse",
+            "email": "nicolas@brousse.info",
+            "homepage": "https://nicolas.brousse.info"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/orieg/judy-polyfill/issues",
+        "source": "https://github.com/orieg/judy-polyfill",
+        "docs": "https://github.com/orieg/php-judy/blob/main/API.md"
+    },
+    "require": {
+        "php": ">=8.1"
+    },
+    "suggest": {
+        "ext-judy": "The native extension: 2-4x less memory and C-speed operations (pie install orieg/judy)"
+    },
+    "autoload": {
+        "psr-4": {
+            "Orieg\\JudyPolyfill\\": "src/"
+        },
+        "files": [
+            "src/bootstrap.php"
+        ]
+    },
+    "minimum-stability": "stable"
+}
