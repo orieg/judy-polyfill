@@ -503,6 +503,32 @@ scenario('range/string', function (string $class) {
         ]);
         // Non-string bounds are a TypeError on string-keyed arrays.
         $r["$name rejects int bounds"] = capture(fn() => $j->keys(1, 2));
+
+        /* size() on string keys is the behaviour change 2.5.0 actually shipped:
+         * before it, string bounds were accepted, ignored, and the whole-array
+         * count came back. Covering only keys()/values()/toArray() above would
+         * leave that regression free to come back unnoticed, so size() is
+         * pinned against the same ranges — and against count(), which must stay
+         * the unbounded answer. */
+        $r["$name size bounded"] = capture(fn() => [
+            $j->size('b', 'c'),
+            $j->size('apple', 'cherry'),
+            $j->size('aa', 'aa'),
+            $j->size('bb', 'bl'),
+            $j->size('c', 'b'),          // inverted: empty
+            $j->size('zzz', 'zzzz'),     // past the end: empty
+            $j->size('b', null),
+            $j->size(null, 'b'),
+        ]);
+        $r["$name size unbounded equals count"] = capture(fn() => [
+            $j->size(), $j->count(), $j->size() === $j->count(),
+        ]);
+        // A bounded size() must agree with the keys() it is counting.
+        $r["$name size agrees with keys"] = capture(fn() => [
+            $j->size('b', 'c') === \count($j->keys('b', 'c')),
+            $j->size(null, 'b') === \count($j->keys(null, 'b')),
+        ]);
+        $r["$name size rejects int bounds"] = capture(fn() => $j->size(1, 2));
     }
     return $r;
 }, requires: '2.5.0');

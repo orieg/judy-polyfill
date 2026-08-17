@@ -60,6 +60,8 @@ check('firstEmpty', 0, $j->firstEmpty());
 check('firstEmpty(1)', 2, $j->firstEmpty(1));
 check('lastEmpty default', -1, $j->lastEmpty());
 check('size ranged', 2, $j->size(2, 400));
+check('size unbounded', 3, $j->size());
+check('size(0, -1) is everything', 3, $j->size(0, -1));
 check('increment', [1, 6], [$j->increment(77), $j->increment(77, 5)]);
 check('sumValues', 10 + 50 + 3000 + 6, $j->sumValues());
 unset($j[77]);
@@ -101,6 +103,10 @@ check('string memoryUsage is an int', 'integer', gettype($s->memoryUsage()));
 check('string memoryUsage grows', true, $s->memoryUsage() > 0);
 check('emptied string memoryUsage is 0', 0, (new $judyClass($judyClass::STRING_TO_INT))->memoryUsage());
 check('getAll', ['aa' => 2, 'missing' => null], $s->getAll(['aa', 'missing']));
+// size() counts a string range rather than ignoring the bounds (ext 2.5.0).
+check('string size unbounded', 3, $s->size());
+check('string size ranged', 1, $s->size('a', 'b'));
+check('string size agrees with keys', true, $s->size('a', 'b') === count($s->keys('a', 'b')));
 
 // Hash types iterate sorted too (verified against native)
 $h = new $judyClass($judyClass::STRING_TO_INT_HASH);

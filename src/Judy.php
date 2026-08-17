@@ -101,11 +101,24 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $this->estimateStringBytes();
     }
 
-    public function size(mixed $start = 0, mixed $end = -1): int
+    /**
+     * Count the keys in the inclusive [$start, $end] range, or all of them
+     * when both bounds are omitted.
+     *
+     * The bounds are keys, not offsets, and they follow the same rules as
+     * keys()/values()/toArray(): integer keys compare as unsigned words (so
+     * size(0, -1) is the whole array, -1 being the maximum), and string-keyed
+     * arrays compare lexicographically and reject non-string bounds.
+     *
+     * Unlike populationCount(), which reads libJudy's population cache and is
+     * therefore integer-keyed only, size() ranges over every type.
+     */
+    public function size(mixed $start = null, mixed $end = null): int
     {
-        if ($start === 0 && $end === -1) {
+        if ($start === null && $end === null) {
             return \count($this->data);
         }
+        $this->assertRangeBounds('size', $start, $end);
         return \count($this->rangeKeys($start, $end));
     }
 
