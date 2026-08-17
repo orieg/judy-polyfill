@@ -6,13 +6,13 @@ namespace Orieg\JudyPolyfill;
  * Pure-PHP implementation of the Judy class from the judy extension
  * (https://github.com/orieg/php-judy).
  *
- * API-compatible with ext-judy 2.4; backed by a native PHP array, so it
+ * API-compatible with ext-judy 2.5; backed by a native PHP array, so it
  * provides compatibility, not the extension's memory/performance profile.
  * Behavioral notes and known divergences are documented in the README.
  */
 class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 {
-    public const POLYFILL_VERSION = '2.4.2-polyfill';
+    public const POLYFILL_VERSION = '2.5.0-polyfill';
 
     public const BITSET = 1;
     public const INT_TO_INT = 2;
@@ -158,7 +158,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     public function nextEmpty(mixed $index): mixed
     {
         $this->assertIntArg($index, __FUNCTION__, nullable: false);
-        return $this->seekEmpty((int) $index + 1, forward: true);
+        // Exclusive: step one key up in unsigned order first, and there is
+        // nothing above -1 to step to.
+        return $this->seekEmpty(self::unsignedSucc((int) $index), forward: true);
     }
 
     public function lastEmpty(mixed $index = null): mixed
@@ -172,7 +174,8 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     public function prevEmpty(mixed $index): mixed
     {
         $this->assertIntArg($index, __FUNCTION__, nullable: false);
-        return $this->seekEmpty((int) $index - 1, forward: false);
+        // Exclusive: step one key down in unsigned order, nothing below 0.
+        return $this->seekEmpty(self::unsignedPred((int) $index), forward: false);
     }
 
     /* ── Set operations ───────────────────────────────────────── */
@@ -600,16 +603,46 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     private function ensureSorted(): void
     {
-        if (!$this->sorted) {
-            \ksort($this->data, $this->sortFlags());
-            $this->sorted = true;
+        if ($this->sorted) {
+            return;
         }
+        if ($this->intKeyed()) {
+            // Unsigned key order, not PHP's signed numeric order — see cmpKeys().
+            \uksort($this->data, fn(int|string $a, int|string $b): int => self::cmpUnsigned((int) $a, (int) $b));
+        } else {
+            \ksort($this->data, $this->sortFlags());
+        }
+        $this->sorted = true;
+    }
+
+    /**
+     * Compare two integer keys as UNSIGNED machine words, which is what they are.
+     *
+     * A negative PHP int has its high bit set, so it addresses the top of the
+     * key space: -1 is the largest key there is, and PHP_INT_MAX sits just below
+     * the entire negative half. Signed comparison would order -1 first, which is
+     * where the polyfill diverged once the extension started storing negative
+     * offsets as keys (php-judy 2.5.0) instead of discarding them.
+     *
+     * Consequences that fall out of this and are pinned by the parity suite:
+     * keys() puts negatives last, first()/last() follow, and size(0, -1) covers
+     * the whole key space because -1 IS the maximum bound.
+     */
+    private static function cmpUnsigned(int $a, int $b): int
+    {
+        if ($a === $b) {
+            return 0;
+        }
+        if (($a < 0) !== ($b < 0)) {
+            return $a < 0 ? 1 : -1;   // the negative one has the high bit set
+        }
+        return $a < $b ? -1 : 1;
     }
 
     private function cmpKeys(int|string $a, mixed $b): int
     {
         if ($this->intKeyed()) {
-            return (int) $a <=> (int) $b;
+            return self::cmpUnsigned((int) $a, (int) $b);
         }
         return \strcmp((string) $a, (string) $b);
     }
@@ -648,9 +681,34 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return null;
     }
 
-    private function seekEmpty(int $start, bool $forward): mixed
+    /**
+     * The next key upward in UNSIGNED order, or null past the top.
+     *
+     * PHP_INT_MAX (0x7fff…f) is followed by PHP_INT_MIN (0x8000…0), not by a
+     * float: incrementing across that edge is where the scans used to promote to
+     * double and emit "not representable as an int". -1 (0xffff…f) is the last
+     * key there is, so there is nothing after it.
+     */
+    private static function unsignedSucc(int $i): ?int
     {
-        if (!$this->intKeyed()) {
+        if ($i === -1) {
+            return null;
+        }
+        return $i === PHP_INT_MAX ? PHP_INT_MIN : $i + 1;
+    }
+
+    /** The next key downward in unsigned order, or null past the bottom (0). */
+    private static function unsignedPred(int $i): ?int
+    {
+        if ($i === 0) {
+            return null;
+        }
+        return $i === PHP_INT_MIN ? PHP_INT_MAX : $i - 1;
+    }
+
+    private function seekEmpty(?int $start, bool $forward): mixed
+    {
+        if (!$this->intKeyed() || $start === null) {
             return null;
         }
         $i = $start;
@@ -658,22 +716,24 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             if (!\array_key_exists($i, $this->data)) {
                 return $i;
             }
-            $i += $forward ? 1 : -1;
+            $i = $forward ? self::unsignedSucc($i) : self::unsignedPred($i);
+            if ($i === null) {
+                return null;   // ran off the end of the key space
+            }
         }
     }
 
     /**
      * Keys inside the inclusive [$start, $end] range, in stored order.
      *
-     * One implementation behind size(), keys(), values() and toArray(), so the
-     * four cannot drift apart. null on either side leaves it unbounded.
+     * One implementation behind size(), populationCount(), keys(), values() and
+     * toArray(), so the five cannot drift apart. null on either side leaves it
+     * unbounded.
      *
-     * Integer bounds mirror the extension's Word_t cast, which is why negatives
-     * are folded to the top of the key space rather than compared as negatives:
-     * the extension reads a bound of -1 as ULONG_MAX (hence size(0, -1) meaning
-     * "everything"), and every other negative likewise lands above any key PHP
-     * can represent. Comparing them as small negative numbers would make
-     * keys(-5, 10) return the low keys here and nothing there.
+     * Integer bounds need no special case for negatives: cmpKeys() compares
+     * integer keys as unsigned words, so a bound of -1 is already the maximum
+     * (which is why size(0, -1) means "everything") and keys(-5, 10) is already
+     * empty because the start sits above the end.
      */
     /**
      * String-keyed arrays compare bounds with strcmp(), so the extension rejects
@@ -696,15 +756,6 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     private function rangeKeys(mixed $start, mixed $end): array
     {
-        if ($this->intKeyed()) {
-            if ($start !== null && (int) $start < 0) {
-                $start = PHP_INT_MAX;
-            }
-            if ($end !== null && (int) $end < 0) {
-                $end = PHP_INT_MAX;
-            }
-        }
-
         $this->ensureSorted();
         $out = [];
         foreach (\array_keys($this->data) as $k) {

@@ -28,7 +28,7 @@ native performance transparently:
 
 ```json
 {
-    "require": { "orieg/judy-polyfill": "^2.4" },
+    "require": { "orieg/judy-polyfill": "^2.5" },
     "suggest": { "ext-judy": "2-4x less memory and C-speed operations" }
 }
 ```
@@ -45,7 +45,7 @@ by a native PHP array:
 - ✅ All 10 Judy type constants, full method surface of ext-judy 2.5
 - ✅ Same coercion, ordering, exception, and edge-case semantics — verified
   by a [parity suite](tests/parity.php) that runs every covered scenario
-  against both implementations in CI (421 checks)
+  against both implementations in CI (458 checks)
 - ✅ **Signature** parity too, not just behavior: the suite reflects over both
   classes and diffs every public method's parameters, defaults and return type.
   Behavior parity alone cannot catch "the method exists but will not accept
@@ -65,10 +65,19 @@ by a native PHP array:
 
 ### Known divergences
 
-- `lastEmpty()` / empty-slot scans near the unsigned 64-bit boundary follow
-  signed-integer wrap semantics; identical for practical key ranges.
+- `size($start, $end)` with **string** bounds counts the range here; the
+  extension currently ignores the bounds and returns the whole-array count
+  ([php-judy#105](https://github.com/orieg/php-judy/issues/105)). This is the
+  one place the polyfill is deliberately *more* correct than the extension:
+  matching it would mean baking in a wrong answer that is about to be fixed.
+  Expected to resolve itself when that issue lands.
 - Iteration while mutating is undefined in both implementations, and the
   undefined behavior differs.
+
+Empty-slot scans at the unsigned 64-bit boundary used to be listed here. They
+now agree: integer keys are compared and stepped as unsigned words, so
+`firstEmpty(PHP_INT_MAX)` returns `PHP_INT_MIN` rather than overflowing to a
+float, and running off either end returns `null` instead of wrapping.
 
 ## Testing
 

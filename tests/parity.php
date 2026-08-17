@@ -447,6 +447,122 @@ scenario('range/string', function (string $class) {
     return $r;
 });
 
+/* populationCount() stays integer-keyed only, bounds or no bounds.
+ *
+ * size() and populationCount() look interchangeable and are not: the second is
+ * specifically a read of libJudy's population cache, and JudySL/JudyHS have no
+ * such cache, so there is nothing for it to read. size() is expected to gain
+ * string bounds (php-judy#105); populationCount() is deliberately not.
+ *
+ * Worth pinning here because the polyfill routes size(), keys(), values() and
+ * toArray() through one shared range helper, and it would be an easy accident
+ * to let populationCount() reach it too and start answering where the extension
+ * throws. */
+scenario('populationCount stays integer-keyed', function (string $class) {
+    $r = [];
+    foreach ([4 => 'STRING_TO_INT', 5 => 'STRING_TO_MIXED', 7 => 'STRING_TO_MIXED_HASH',
+              8 => 'STRING_TO_INT_HASH', 9 => 'STRING_TO_MIXED_ADAPTIVE',
+              10 => 'STRING_TO_INT_ADAPTIVE'] as $type => $name) {
+        $j = new $class($type);
+        $j['aa'] = 1;
+        $j['bb'] = 2;
+        $r["$name bounded"] = capture(fn() => $j->populationCount('a', 'c'));
+        $r["$name unbounded"] = capture(fn() => $j->populationCount());
+    }
+    return $r;
+});
+
+/* ── Negative integer keys (ext-judy 2.5.0) ──────────────────────
+ *
+ * Integer keys are unsigned machine words, so a negative PHP int addresses the
+ * TOP of the key space: -1 is the largest key there is, and the whole negative
+ * half sorts above PHP_INT_MAX. Before 2.5.0 the extension discarded negative
+ * offsets and appended instead, so this was unreachable and the divergence here
+ * was invisible — a PHP array orders those keys signed, putting -1 first.
+ *
+ * Everything below follows from the ordering: keys()/toArray() order,
+ * first()/last(), the empty-slot scans, and the range bounds. -1 as an upper
+ * bound is the maximum, which is exactly why size(0, -1) means "everything".
+ */
+scenario('negative keys', function (string $class) {
+    $r = [];
+    foreach ([1 => 'BITSET', 2 => 'INT_TO_INT', 3 => 'INT_TO_MIXED', 6 => 'INT_TO_PACKED'] as $type => $name) {
+        $val = fn(int $i) => $type === 1 ? true : ($type === 2 ? $i : "v$i");
+
+        $r["$name round trip"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            $j[-1] = $val(1);
+            $j[PHP_INT_MIN] = $val(2);
+            return [$j->count(), isset($j[-1]), $j[-1], isset($j[0]), $j[PHP_INT_MIN]];
+        });
+
+        $r["$name unsigned order"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([5, 1, -1, -2, PHP_INT_MAX, PHP_INT_MIN, 0] as $k) {
+                $j[$k] = $val($k);
+            }
+            return [$j->keys(), $j->toArray(), $j->values()];
+        });
+
+        $r["$name first/last/nav"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([5, -1, -2, 0] as $k) {
+                $j[$k] = $val($k);
+            }
+            return [$j->first(), $j->last(), $j->searchNext(5), $j->prev(-1), $j->byCount(1), $j->byCount(4)];
+        });
+
+        $r["$name ranges"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([5, 1, -1, -2, PHP_INT_MAX] as $k) {
+                $j[$k] = $val($k);
+            }
+            return [
+                $j->keys(0, -1),        // 0 .. unsigned max: everything
+                $j->keys(-2, -1),       // just the negative pair
+                $j->keys(0, 100),       // excludes the negatives
+                $j->keys(-1, -1),
+                $j->keys(-5, 10),       // start above end: empty
+                $j->size(0, -1),
+                $j->populationCount(0, -1),
+                $j->populationCount(-2, -1),
+            ];
+        });
+
+        $r["$name iteration order"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([3, -1, 0] as $k) {
+                $j[$k] = $val($k);
+            }
+            $out = [];
+            foreach ($j as $k => $v) {
+                $out[] = $k;
+            }
+            return $out;
+        });
+
+        $r["$name deleteRange/slice"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([5, 1, -1, -2] as $k) {
+                $j[$k] = $val($k);
+            }
+            $sliced = $j->slice(-2, -1)->keys();
+            $deleted = $j->deleteRange(-2, -1);
+            return [$sliced, $deleted, $j->keys()];
+        });
+    }
+
+    // Empty-slot scans are unsigned too: the first absent key at or above -2.
+    $r['empties around the top'] = capture(function () use ($class) {
+        $j = new $class(2);
+        $j[-1] = 1;
+        $j[-3] = 3;
+        return [$j->firstEmpty(-3), $j->nextEmpty(-3), $j->lastEmpty(), $j->prevEmpty(-1)];
+    });
+
+    return $r;
+});
+
 /* The flag the extension added alongside: accepted everywhere, honoured only
    natively, and isIterationOptimized() is what makes the difference visible. */
 scenario('optimizeIteration accepted', function (string $class) {
