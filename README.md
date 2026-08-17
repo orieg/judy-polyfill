@@ -89,6 +89,22 @@ php -d extension=judy tests/parity.php      # diff every scenario vs native
 CI runs both legs on PHP 8.1–8.5, with the extension installed via
 [PIE](https://github.com/php/pie).
 
+The parity suite is **version-aware**, because PIE installs the latest
+*released* extension while this package tracks the latest extension *API*, and
+those are not the same thing between a merge and a release. Each check that
+needs a newer extension than the one loaded is skipped and named, with the
+version it wants:
+
+```
+SKIP [range/int] needs ext-judy >= 2.5.0, have 2.4.2
+ext-judy 2.4.2: 298 checks, 0 divergences, 11 skipped (need a newer extension)
+ext-judy 2.5.0: 458 checks, 0 divergences
+```
+
+Nothing is silently dropped, and the suite strengthens on its own the moment
+CI's extension catches up. Failing instead would produce a permanently red
+build that everyone learns to ignore, which is worse than no check at all.
+
 ## License
 
 MIT. The Judy extension itself is licensed under the PHP License.

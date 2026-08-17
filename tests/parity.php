@@ -20,6 +20,38 @@ if (!extension_loaded('judy')) {
 const NATIVE = \Judy::class;
 const POLY   = \Orieg\JudyPolyfill\Judy::class;
 
+/**
+ * The polyfill targets the newest extension API, but CI installs whatever
+ * version is RELEASED, and this suite has to stay meaningful against both.
+ *
+ * The two are never loaded together at runtime — bootstrap.php only defines the
+ * polyfill when ext-judy is absent — so this is a development check, not a
+ * compatibility shim. Its job is to prove the polyfill matches the extension on
+ * everything that extension actually has. Expectations that need a newer
+ * extension than the one installed are SKIPPED and named, rather than failing:
+ * a red suite that everyone knows to ignore is worse than no suite, and
+ * silently dropping the checks would be worse than either.
+ *
+ * Checks strengthen automatically as soon as CI's extension catches up.
+ */
+define('EXT_VERSION', \judy_version());
+
+function extAtLeast(string $version): bool
+{
+    return \version_compare(EXT_VERSION, $version, '>=');
+}
+
+/** Method => the extension version that gave it its current signature. */
+const SIGNATURE_SINCE = [
+    'keys'                 => '2.5.0',   // range arguments (php-judy#96)
+    'values'               => '2.5.0',
+    'toArray'              => '2.5.0',
+    'size'                 => '2.5.0',   // $index_start/$index_end -> $start/$end
+    '__construct'          => '2.5.0',   // $optimizeIteration
+    'fromArray'            => '2.5.0',
+    'isIterationOptimized' => '2.5.0',
+];
+
 /** Normalize any outcome (value/exception) into a comparable form. */
 function capture(callable $fn): mixed
 {
@@ -51,10 +83,16 @@ function memShape(mixed $v): string
 
 $failures = 0;
 $checks   = 0;
+$skipped  = 0;
 
-function scenario(string $label, callable $steps): void
+function scenario(string $label, callable $steps, ?string $requires = null): void
 {
-    global $failures, $checks;
+    global $failures, $checks, $skipped;
+    if ($requires !== null && !extAtLeast($requires)) {
+        $skipped++;
+        echo "SKIP [$label] needs ext-judy >= $requires, have " . EXT_VERSION . "\n";
+        return;
+    }
     $native = $steps(NATIVE);
     $poly   = $steps(POLY);
     foreach ($native as $step => $expected) {
@@ -120,7 +158,7 @@ function normalizeType(string $type): string
 
 function signatureParity(): void
 {
-    global $failures, $checks;
+    global $failures, $checks, $skipped;
 
     $publics = static fn(string $c): array => array_map(
         static fn(\ReflectionMethod $m): string => $m->getName(),
@@ -132,17 +170,35 @@ function signatureParity(): void
     sort($native);
     sort($poly);
 
+    $gate = static function (string $m) use (&$skipped): bool {
+        $since = SIGNATURE_SINCE[$m] ?? null;
+        if ($since !== null && !extAtLeast($since)) {
+            $skipped++;
+            echo "SKIP [signature :: $m] needs ext-judy >= $since, have " . EXT_VERSION . "\n";
+            return false;
+        }
+        return true;
+    };
+
     foreach (array_diff($native, $poly) as $m) {
         $checks++;
         $failures++;
         echo "DIVERGE [signature :: $m]\n  native:   declared\n  polyfill: «missing»\n";
     }
+    // A method the polyfill has and this extension does not is only drift if
+    // the extension is new enough to have been expected to declare it.
     foreach (array_diff($poly, $native) as $m) {
+        if (!$gate($m)) {
+            continue;
+        }
         $checks++;
         $failures++;
         echo "DIVERGE [signature :: $m]\n  native:   «absent»\n  polyfill: declared (extra public method)\n";
     }
     foreach (array_intersect($native, $poly) as $m) {
+        if (!$gate($m)) {
+            continue;
+        }
         $checks++;
         $a = renderSignature(NATIVE, $m);
         $b = renderSignature(POLY, $m);
@@ -324,8 +380,12 @@ foreach ($stringTypes as $name => $type) {
         // Shape only, as for the integer-keyed types above. The extension's
         // string-keyed figure is its own payload accounting over JudySL/JudyHS;
         // an exact match from a PHP array is neither achievable nor meaningful.
-        // What has to agree is that both report an int rather than null.
-        $r['memoryUsage shape'] = capture(fn() => memShape($j->memoryUsage()));
+        // What has to agree is that both report an int rather than null — and
+        // only from 2.5.0, which is when the extension gained that accounting
+        // at all; before it, string-keyed memoryUsage() was null by contract.
+        if (extAtLeast('2.5.0')) {
+            $r['memoryUsage shape'] = capture(fn() => memShape($j->memoryUsage()));
+        }
         $r['numeric-string key'] = capture(function () use ($j, $val) {
             $j['123'] = $val('123');
             return [$j->first(), $j['123'], array_key_exists(123, $j->toArray())];
@@ -406,7 +466,7 @@ scenario('range/int', function (string $class) {
         ]);
     }
     return $r;
-});
+}, requires: '2.5.0');
 
 scenario('range/string', function (string $class) {
     $r = [];
@@ -445,7 +505,7 @@ scenario('range/string', function (string $class) {
         $r["$name rejects int bounds"] = capture(fn() => $j->keys(1, 2));
     }
     return $r;
-});
+}, requires: '2.5.0');
 
 /* populationCount() stays integer-keyed only, bounds or no bounds.
  *
@@ -561,7 +621,7 @@ scenario('negative keys', function (string $class) {
     });
 
     return $r;
-});
+}, requires: '2.5.0');
 
 /* The flag the extension added alongside: accepted everywhere, honoured only
    natively, and isIterationOptimized() is what makes the difference visible. */
@@ -580,7 +640,9 @@ scenario('optimizeIteration accepted', function (string $class) {
         });
     }
     return $r;
-});
+}, requires: '2.5.0');
 
-echo "\n$checks checks, $failures divergences\n";
+printf("\next-judy %s: %d checks, %d divergences%s\n",
+    EXT_VERSION, $checks, $failures,
+    $skipped > 0 ? ", $skipped skipped (need a newer extension)" : '');
 exit($failures === 0 ? 0 : 1);
