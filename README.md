@@ -42,14 +42,26 @@ performance profile, and the polyfill cannot honestly satisfy that.
 The polyfill is **API-compatible, not performance-equivalent**. It is backed
 by a native PHP array:
 
-- ✅ All 10 Judy type constants, full method surface of ext-judy 2.4
+- ✅ All 10 Judy type constants, full method surface of ext-judy 2.5
 - ✅ Same coercion, ordering, exception, and edge-case semantics — verified
   by a [parity suite](tests/parity.php) that runs every covered scenario
-  against both implementations in CI (249 checks)
+  against both implementations in CI (421 checks)
+- ✅ **Signature** parity too, not just behavior: the suite reflects over both
+  classes and diffs every public method's parameters, defaults and return type.
+  Behavior parity alone cannot catch "the method exists but will not accept
+  those arguments", which is how the extension's range arguments went unnoticed
+  here for a while
 - ❌ No memory savings — that is the extension's job
-- ❌ `memoryUsage()` / `free()` byte counts are estimates (the extension
-  reports real allocator numbers); `memoryUsage()` still returns `null` for
-  string-keyed types exactly like the extension
+- ❌ `memoryUsage()` / `free()` byte counts are estimates. Both implementations
+  return an approximation for string-keyed types (the extension has no
+  allocator accounting to read there) and the two approximations are composed
+  the same way but will not match byte-for-byte; only the *shape* is a parity
+  target
+- ⚠️ `$optimizeIteration` (constructor, `fromArray()`) is accepted and ignored,
+  and `isIterationOptimized()` always returns `false`. It is a native-memory
+  read/write trade with no meaning for a PHP array — and the extension's own
+  contract already covers not honouring it, since types that cannot mirror
+  behave the same way. Pass it unconditionally in generic code
 
 ### Known divergences
 

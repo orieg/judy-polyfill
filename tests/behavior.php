@@ -95,7 +95,11 @@ $s['zz'] = 1; $s['aa'] = 2; $s['123'] = 9;
 check('trie first is lexicographic', '123', $s->first());
 check('trie searchNext', 'zz', $s->searchNext('aa'));
 check('string byCount null', null, $s->byCount(1));
-check('string memoryUsage null', null, $s->memoryUsage());
+// The extension gained approximate string-keyed accounting, so this reports an
+// int rather than null now; only the emptied case is pinned to an exact value.
+check('string memoryUsage is an int', 'integer', gettype($s->memoryUsage()));
+check('string memoryUsage grows', true, $s->memoryUsage() > 0);
+check('emptied string memoryUsage is 0', 0, (new $judyClass($judyClass::STRING_TO_INT))->memoryUsage());
 check('getAll', ['aa' => 2, 'missing' => null], $s->getAll(['aa', 'missing']));
 
 // Hash types iterate sorted too (verified against native)

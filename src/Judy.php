@@ -38,7 +38,18 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     private array $iterKeys = [];
     private int $iterPos = 0;
 
-    public function __construct(int $type)
+    /**
+     * $optimizeIteration is accepted and ignored.
+     *
+     * In the extension it trades write speed for ordered-read speed by keeping
+     * a second copy of each payload in the key index. That is a native-memory
+     * trade with no meaning for a PHP array, and the extension's own contract
+     * already covers being unable to honour it: types that cannot mirror accept
+     * the argument and report false from isIterationOptimized(). The polyfill is
+     * simply always in that position, so generic code can pass the flag
+     * unconditionally against either implementation.
+     */
+    public function __construct(int $type, bool $optimizeIteration = false)
     {
         if ($type < self::BITSET || $type > self::STRING_TO_INT_ADAPTIVE) {
             throw new \Exception('Judy::__construct(): Not a valid Judy type. Please check the documentation for valid Judy type constant.');
@@ -57,6 +68,12 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $this->type;
     }
 
+    /** Always false: a PHP array has no key index to mirror into. */
+    public function isIterationOptimized(): bool
+    {
+        return false;
+    }
+
     public function free(): int
     {
         $bytes = $this->estimateBytes();
@@ -65,20 +82,31 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $bytes;
     }
 
+    /**
+     * Approximate bytes. Never null for an initialised array, and 0 when empty.
+     *
+     * The extension returns two different kinds of number here and documents
+     * both: an EXACT libJudy figure for integer-keyed types, and — since it
+     * gained string-keyed accounting — an APPROXIMATE payload-only figure for
+     * string-keyed ones, because JudySL/JudyHS expose no accounting of their
+     * own. Neither is reproducible from a PHP array, so this is an estimate of
+     * the same *shape*: useful for tracking growth within one array, not
+     * comparable byte-for-byte against the extension.
+     */
     public function memoryUsage(): ?int
     {
-        if (!$this->intKeyed()) {
-            return null; // matches ext: JudySL/JudyHS provide no accounting
+        if ($this->intKeyed()) {
+            return $this->estimateBytes();
         }
-        return $this->estimateBytes();
+        return $this->estimateStringBytes();
     }
 
-    public function size(mixed $index_start = 0, mixed $index_end = -1): int
+    public function size(mixed $start = 0, mixed $end = -1): int
     {
-        if ($index_start === 0 && $index_end === -1) {
+        if ($start === 0 && $end === -1) {
             return \count($this->data);
         }
-        return $this->countRange($index_start, $index_end);
+        return \count($this->rangeKeys($start, $end));
     }
 
     public function count(): int
@@ -311,16 +339,29 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     /* ── Batch operations ─────────────────────────────────────── */
 
-    public function toArray(): array
+    public function toArray(mixed $start = null, mixed $end = null): array
     {
+        $this->assertRangeBounds('toArray', $start, $end);
         $this->ensureSorted();
-        if ($this->type === self::BITSET) {
-            return \array_keys($this->data);
+        if ($start === null && $end === null) {
+            if ($this->type === self::BITSET) {
+                return \array_keys($this->data);
+            }
+            return $this->data;
         }
-        return $this->data;
+        $keys = $this->rangeKeys($start, $end);
+        if ($this->type === self::BITSET) {
+            return \array_values($keys);
+        }
+        $out = [];
+        foreach ($keys as $k) {
+            $out[$k] = $this->data[$k];
+        }
+        return $out;
     }
 
-    public static function fromArray(int $type, array $data): static
+    /** @param bool $optimizeIteration Accepted and ignored; see __construct(). */
+    public static function fromArray(int $type, array $data, bool $optimizeIteration = false): static
     {
         $judy = new static($type);
         $judy->putAll($data);
@@ -351,19 +392,35 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $result;
     }
 
-    public function keys(): array
+    public function keys(mixed $start = null, mixed $end = null): array
     {
+        $this->assertRangeBounds('keys', $start, $end);
         $this->ensureSorted();
-        return \array_keys($this->data);
-    }
-
-    public function values(): array
-    {
-        $this->ensureSorted();
-        if ($this->type === self::BITSET) {
+        if ($start === null && $end === null) {
             return \array_keys($this->data);
         }
-        return \array_values($this->data);
+        return \array_values($this->rangeKeys($start, $end));
+    }
+
+    public function values(mixed $start = null, mixed $end = null): array
+    {
+        $this->assertRangeBounds('values', $start, $end);
+        $this->ensureSorted();
+        if ($start === null && $end === null) {
+            if ($this->type === self::BITSET) {
+                return \array_keys($this->data);
+            }
+            return \array_values($this->data);
+        }
+        $keys = $this->rangeKeys($start, $end);
+        if ($this->type === self::BITSET) {
+            return \array_values($keys);
+        }
+        $out = [];
+        foreach ($keys as $k) {
+            $out[] = $this->data[$k];
+        }
+        return $out;
     }
 
     public function increment(mixed $key, int $amount = 1): int
@@ -486,7 +543,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         if ($start === 0 && $end === -1) {
             return \count($this->data);
         }
-        return $this->countRange($start, $end);
+        return \count($this->rangeKeys($start, $end));
     }
 
     public function deleteRange(mixed $start, mixed $end): int
@@ -605,18 +662,61 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
     }
 
-    private function countRange(mixed $start, mixed $end): int
+    /**
+     * Keys inside the inclusive [$start, $end] range, in stored order.
+     *
+     * One implementation behind size(), keys(), values() and toArray(), so the
+     * four cannot drift apart. null on either side leaves it unbounded.
+     *
+     * Integer bounds mirror the extension's Word_t cast, which is why negatives
+     * are folded to the top of the key space rather than compared as negatives:
+     * the extension reads a bound of -1 as ULONG_MAX (hence size(0, -1) meaning
+     * "everything"), and every other negative likewise lands above any key PHP
+     * can represent. Comparing them as small negative numbers would make
+     * keys(-5, 10) return the low keys here and nothing there.
+     */
+    /**
+     * String-keyed arrays compare bounds with strcmp(), so the extension rejects
+     * a non-string bound outright rather than coercing it. null is always fine:
+     * it means "unbounded on that side", not "a bound".
+     */
+    private function assertRangeBounds(string $method, mixed $start, mixed $end): void
     {
-        if ($end === -1 && $this->intKeyed()) {
-            $end = PHP_INT_MAX;
+        if ($this->intKeyed()) {
+            return;
         }
-        $count = 0;
-        foreach (\array_keys($this->data) as $k) {
-            if ($this->cmpKeys($k, $start) >= 0 && $this->cmpKeys($k, $end) <= 0) {
-                $count++;
+        foreach ([$start, $end] as $bound) {
+            if ($bound !== null && !\is_string($bound)) {
+                throw new \TypeError(
+                    "Judy::$method() expects string arguments for string-keyed arrays"
+                );
             }
         }
-        return $count;
+    }
+
+    private function rangeKeys(mixed $start, mixed $end): array
+    {
+        if ($this->intKeyed()) {
+            if ($start !== null && (int) $start < 0) {
+                $start = PHP_INT_MAX;
+            }
+            if ($end !== null && (int) $end < 0) {
+                $end = PHP_INT_MAX;
+            }
+        }
+
+        $this->ensureSorted();
+        $out = [];
+        foreach (\array_keys($this->data) as $k) {
+            if ($start !== null && $this->cmpKeys($k, $start) < 0) {
+                continue;
+            }
+            if ($end !== null && $this->cmpKeys($k, $end) > 0) {
+                continue;
+            }
+            $out[] = $k;
+        }
+        return $out;
     }
 
     private function assertSameType(Judy|\Judy $other): void
@@ -656,5 +756,37 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     {
         $n = \count($this->data);
         return $n === 0 ? 0 : 40 + 9 * $n;
+    }
+
+    /**
+     * Payload-only estimate for string-keyed types, composed the way the
+     * extension composes its own: the stored key bytes, counted twice for the
+     * _HASH types because those hold each key in both the value store and the
+     * key index, plus one machine word per value slot, plus a zval box for each
+     * _MIXED value. Like the extension's, it excludes container overhead and is
+     * therefore a lower bound.
+     */
+    private function estimateStringBytes(): int
+    {
+        if ($this->data === []) {
+            return 0;
+        }
+
+        $hashed = \in_array($this->type, [
+            self::STRING_TO_INT_HASH,
+            self::STRING_TO_MIXED_HASH,
+        ], true);
+        $mixed = !\in_array($this->type, self::INT_VALUED, true);
+
+        $bytes = 0;
+        foreach (\array_keys($this->data) as $k) {
+            $keyBytes = \strlen((string) $k);
+            $bytes += $hashed ? $keyBytes * 2 : $keyBytes;
+            $bytes += \PHP_INT_SIZE;        // one word per value slot
+            if ($mixed) {
+                $bytes += 16;               // the zval box the extension allocates
+            }
+        }
+        return $bytes;
     }
 }
