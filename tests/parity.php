@@ -453,7 +453,6 @@ scenario('string/numeric-key types', function (string $class) {
         $types = fn(array $a) => implode(',', array_map('gettype', $a));
 
         $r["$name keys() types"] = capture(fn() => $types($j->keys()));
-        $r["$name keys(bounded) types"] = capture(fn() => $types($j->keys('-7', 'user.3')));
         $r["$name foreach key types"] = capture(function () use ($j) {
             $out = [];
             foreach ($j as $k => $v) { $out[] = gettype($k); }
@@ -475,6 +474,24 @@ scenario('string/numeric-key types', function (string $class) {
     }
     return $r;
 });
+
+/* The same key-type check through a BOUNDED keys(), split out because the
+   range arguments arrived in ext-judy 2.5.0 (php-judy#96): before that keys()
+   took none, and calling it with two compares this class against a method that
+   cannot accept the call. */
+scenario('string/numeric-key types, bounded', function (string $class) {
+    $r = [];
+    $keys = ['42', '-7', '07', '0', '9223372036854775807', 'user.3'];
+    foreach ([4 => 'STRING_TO_INT', 7 => 'STRING_TO_MIXED_HASH', 10 => 'STRING_TO_INT_ADAPTIVE'] as $type => $name) {
+        $j = new $class($type);
+        foreach ($keys as $i => $k) {
+            $j[$k] = $i;
+        }
+        $types = fn(array $a) => implode(',', array_map('gettype', $a));
+        $r["$name keys(bounded) types"] = capture(fn() => $types($j->keys('-7', 'user.3')));
+    }
+    return $r;
+}, requires: '2.5.0');
 
 /** The six string-keyed types, in one place: three scenarios below want them. */
 const STRING_KEYED = [
@@ -725,21 +742,12 @@ scenario('string/high-byte keys', function (string $class) {
             $mk()->first("\x80"), $mk()->last("\x80"),
             $mk()->searchNext("\x7f"), $mk()->prev("\xff"),
         ]));
-        $r["$name high-byte ranges"] = capture(fn() => [
-            hex($mk()->keys("\x80", "\xff")),
-            hex($mk()->keys("\x01", "\x7f")),
-            $mk()->values("\x80", "\xff"),
-            hexKeys($mk()->toArray("\x80", "\xff")),
-            $mk()->size("\x80", "\xff"),
-            $mk()->size("\x01", "\x7f"),
-        ]);
-        /* Prefix-successor carry: everything under the prefix "ab" is
-           [ab, ab\xff...] and stops before "ac". */
-        $r["$name prefix successor"] = capture(fn() => [
-            hex($mk()->keys('ab', "ab\xff")),
-            hex($mk()->keys('ab', 'ac')),
+        /* slice() has taken bounds since 2.4.0, so the prefix-successor carry
+           is checkable here; the keys()/values()/toArray()/size() half of it
+           needs 2.5.0 and lives in the gated sibling scenario below. */
+        $r["$name prefix successor via slice"] = capture(fn() => [
             hex($mk()->slice('a', "a\xff")->keys()),
-            $mk()->size('ab', 'ac'),
+            hex($mk()->slice('ab', 'ac')->keys()),
         ]);
         $r["$name unset high byte"] = capture(function () use ($mk) {
             $j = $mk();
@@ -755,6 +763,44 @@ scenario('string/high-byte keys', function (string $class) {
     }
     return $r;
 });
+
+/* The bounded half of the same corpus: unsigned byte order as seen through
+   keys()/values()/toArray()/size() range arguments, which arrived in ext-judy
+   2.5.0 (php-judy#96) and so cannot be asked of an older extension. The
+   ordering itself is already pinned ungated above, by the full-array keys()
+   and by slice(); this adds the range bounds that are carry arithmetic over
+   exactly those bytes. */
+scenario('string/high-byte keys, bounded', function (string $class) {
+    $r = [];
+    $corpus = ["\x01", "\x7f", "\x80", "\xc3\xa9", "\xfe", "\xff", "a\xffb", "ab\xff", "ac", "\xff\xff"];
+
+    foreach (STRING_KEYED as $type => $name) {
+        $intValued = in_array($type, [4, 8, 10], true);
+        $mk = function () use ($class, $type, $corpus, $intValued) {
+            $j = new $class($type);
+            foreach ($corpus as $i => $k) {
+                $j[$k] = $intValued ? $i : "v$i";
+            }
+            return $j;
+        };
+        $r["$name high-byte ranges"] = capture(fn() => [
+            hex($mk()->keys("\x80", "\xff")),
+            hex($mk()->keys("\x01", "\x7f")),
+            $mk()->values("\x80", "\xff"),
+            hexKeys($mk()->toArray("\x80", "\xff")),
+            $mk()->size("\x80", "\xff"),
+            $mk()->size("\x01", "\x7f"),
+        ]);
+        /* Prefix-successor carry: everything under the prefix "ab" is
+           [ab, ab\xff...] and stops before "ac". */
+        $r["$name prefix successor"] = capture(fn() => [
+            hex($mk()->keys('ab', "ab\xff")),
+            hex($mk()->keys('ab', 'ac')),
+            $mk()->size('ab', 'ac'),
+        ]);
+    }
+    return $r;
+}, requires: '2.5.0');
 
 /* ── ArrayAccess offset types on string-keyed arrays ─────────────
  *
@@ -995,20 +1041,6 @@ scenario('string/slice bound types', function (string $class) {
                 return [$n, $j->keys()];
             });
         }
-
-        /* The bounded reads reject the same int bounds, each naming ITSELF in
-           the message — which is why these compare messages and not just "did
-           it throw". And they accept null on both sides, where slice() does
-           not: that pair of checks is the null half of the difference. */
-        foreach ([
-            'keys'    => fn($j, $lo, $hi) => $j->keys($lo, $hi),
-            'values'  => fn($j, $lo, $hi) => $j->values($lo, $hi),
-            'toArray' => fn($j, $lo, $hi) => $j->toArray($lo, $hi),
-            'size'    => fn($j, $lo, $hi) => $j->size($lo, $hi),
-        ] as $method => $call) {
-            $r["$name $method(int, int)"] = capture(fn() => $call($mk(), 1, 2));
-            $r["$name $method(null, null)"] = capture(fn() => $call($mk(), null, null));
-        }
     }
 
     /* Integer-keyed types take integer bounds, as always. */
@@ -1024,6 +1056,52 @@ scenario('string/slice bound types', function (string $class) {
 
     return $r;
 });
+
+/* ── slice() vs the bounded reads on bound types ─────────────────
+ *
+ * The other half of the slice() comparison, split out for one reason: it CALLS
+ * keys()/values()/toArray()/size() with range arguments, and those arrived in
+ * ext-judy 2.5.0 (php-judy#96). Before that keys(), values() and toArray()
+ * took no arguments at all and size() ignored the pair, so running these
+ * against an older extension compares this class against a method that cannot
+ * accept the call — an ArgumentCountError, which says nothing about bound
+ * types. slice() itself needs no gate: it has type-checked its bounds since
+ * 2.4.0, when it was added, which is why it stays in the ungated scenario.
+ *
+ * What is pinned here is the pair of differences between slice() and the four
+ * bounded reads:
+ *
+ *   - They reject the same non-string bounds, each naming ITSELF in the
+ *     message — which is why these compare messages and not just "did it
+ *     throw".
+ *   - They accept null on BOTH sides, reading it as "unbounded", where
+ *     slice() rejects it because its two bounds are required.
+ */
+scenario('string/slice vs bounded reads', function (string $class) {
+    $r = [];
+    foreach (STRING_KEYED as $type => $name) {
+        $intValued = in_array($type, [4, 8, 10], true);
+        $mk = function () use ($class, $type, $intValued) {
+            $j = new $class($type);
+            foreach (['aa', 'mm', 'zz'] as $i => $k) {
+                $j[$k] = $intValued ? $i : "v$i";
+            }
+            return $j;
+        };
+        foreach ([
+            'keys'    => fn($j, $lo, $hi) => $j->keys($lo, $hi),
+            'values'  => fn($j, $lo, $hi) => $j->values($lo, $hi),
+            'toArray' => fn($j, $lo, $hi) => $j->toArray($lo, $hi),
+            'size'    => fn($j, $lo, $hi) => $j->size($lo, $hi),
+        ] as $method => $call) {
+            $r["$name $method(int, int)"] = capture(fn() => $call($mk(), 1, 2));
+            $r["$name $method(null, null)"] = capture(fn() => $call($mk(), null, null));
+            /* slice() rejects the null pair the bounded reads accept. */
+            $r["$name slice vs $method on null"] = capture(fn() => $mk()->slice(null, null));
+        }
+    }
+    return $r;
+}, requires: '2.5.0');
 
 /* ── Bounded keys()/values()/toArray() ───────────────────────────
  *
