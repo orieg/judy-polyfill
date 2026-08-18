@@ -756,6 +756,275 @@ scenario('string/high-byte keys', function (string $class) {
     return $r;
 });
 
+/* ── ArrayAccess offset types on string-keyed arrays ─────────────
+ *
+ * The extension refuses to coerce an ArrayAccess offset: on a string-keyed
+ * array $j[42] is a TypeError, not the key "42". Nothing else on those types
+ * is strict — putAll([1 => 'x']) stores the key "1" without complaint, and so
+ * do getAll(), fromArray(), increment() and every seek — so this is a property
+ * of the offset SYNTAX, not of string keys, and a polyfill backed by a PHP
+ * array coerces everywhere by default and is wrong in exactly one of those
+ * places. The asymmetry is the whole scenario: both halves are pinned, so
+ * "fixing" either direction shows up here.
+ *
+ * The empty-array reprieve is pinned too. Like the NUL guard, the type guard
+ * sits BEHIND the null-array short circuit in the three read/delete handlers,
+ * so on an empty array $j[42] answers absent instead of throwing — and it holds
+ * however the array became empty. offsetSet() has no such path and always
+ * throws. That ordering is what makes this a four-handler scenario rather than
+ * one check: a polyfill that put the guard in its key-coercion helper would be
+ * right on offsetSet() and wrong on the other three.
+ *
+ * Both guards live in the same macro natively (CHECK_ARRAY_AND_ARG_TYPE), type
+ * first and bytes second, so a non-string offset never reaches the NUL check.
+ */
+scenario('string/offset types', function (string $class) {
+    $r = [];
+    /* Every non-string offset PHP can hand an ArrayAccess handler. null is
+       here because it is NOT special to the extension — see the append note
+       at the bottom for the one case userland cannot reproduce. */
+    $offsets = [
+        'int'    => 42,
+        'zero'   => 0,
+        'float'  => 1.5,
+        'true'   => true,
+        'false'  => false,
+        'null'   => null,
+        'array'  => ['x'],
+        'object' => new stdClass(),
+    ];
+
+    foreach (STRING_KEYED as $type => $name) {
+        $intValued = in_array($type, [4, 8, 10], true);
+        $val = fn(string $k) => $intValued ? strlen($k) : "v:$k";
+        $mk = function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach (['aa', 'zz'] as $k) {
+                $j[$k] = $val($k);
+            }
+            return $j;
+        };
+        $empty = fn() => new $class($type);
+
+        foreach ($offsets as $label => $offset) {
+            /* Populated: all four handlers reject. */
+            $r["$name set[$label]"] = capture(function () use ($mk, $offset, $intValued) {
+                $j = $mk();
+                $j[$offset] = $intValued ? 1 : 'v';
+                return [$j->count(), $j->keys()];
+            });
+            $r["$name get[$label]"] = capture(fn() => $mk()[$offset]);
+            $r["$name exists[$label]"] = capture(fn() => isset($mk()[$offset]));
+            $r["$name unset[$label]"] = capture(function () use ($mk, $offset) {
+                $j = $mk();
+                unset($j[$offset]);
+                return $j->count();
+            });
+
+            /* Empty: the three read/delete handlers answer before they look,
+               offsetSet() still throws. */
+            $r["$name get[$label] on empty"] = capture(fn() => $empty()[$offset]);
+            $r["$name exists[$label] on empty"] = capture(fn() => isset($empty()[$offset]));
+            $r["$name unset[$label] on empty"] = capture(function () use ($empty, $offset) {
+                $j = $empty();
+                unset($j[$offset]);
+                return $j->count();
+            });
+            $r["$name set[$label] on empty"] = capture(function () use ($empty, $offset, $intValued) {
+                $j = $empty();
+                $j[$offset] = $intValued ? 1 : 'v';
+                return $j->count();
+            });
+        }
+
+        /* The reprieve holds however the array became empty, not just on one
+           that was never written to. */
+        foreach ([
+            'unset'       => function ($j) { unset($j['aa'], $j['zz']); },
+            'deleteRange' => function ($j) { $j->deleteRange('a', 'zzz'); },
+            'free'        => function ($j) { $j->free(); },
+        ] as $how => $drain) {
+            $r["$name get[int] after $how"] = capture(function () use ($mk, $drain) {
+                $j = $mk();
+                $drain($j);
+                return [$j->count(), $j[42], isset($j[42])];
+            });
+        }
+
+        /* The other half of the asymmetry: everything that is NOT an offset
+           coerces, and must keep coercing. */
+        $r["$name putAll coerces"] = capture(function () use ($class, $type, $intValued) {
+            $j = new $class($type);
+            $j->putAll([1 => $intValued ? 9 : 'x', true => $intValued ? 8 : 'y']);
+            return [$j->keys(), $j->toArray()];
+        });
+        $r["$name getAll coerces"] = capture(function () use ($mk, $intValued) {
+            $j = $mk();
+            $j['1'] = $intValued ? 9 : 'x';
+            return $j->getAll([1, 'aa']);
+        });
+        $r["$name fromArray coerces"] = capture(fn() => $class::fromArray($type, [1 => $intValued ? 9 : 'x'])->keys());
+        $r["$name increment coerces"] = capture(function () use ($mk) {
+            $j = $mk();
+            $j->increment(1);
+            return $j->keys();
+        });
+        $r["$name seeks coerce"] = capture(fn() => [
+            $mk()->first(1), $mk()->last(1), $mk()->searchNext(1), $mk()->prev(1),
+        ]);
+        /* A numeric STRING offset is a string and is accepted, which is what
+           makes the int rejection a type rule rather than a "looks numeric"
+           rule. */
+        $r["$name numeric string offset"] = capture(function () use ($mk, $intValued) {
+            $j = $mk();
+            $j['42'] = $intValued ? 1 : 'v';
+            return [$j->count(), $j->keys(), $j['42'], isset($j['42'])];
+        });
+        /* The empty string is a string. */
+        $r["$name empty string offset"] = capture(function () use ($mk, $intValued) {
+            $j = $mk();
+            $j[''] = $intValued ? 1 : 'v';
+            return [$j->count(), $j[''], isset($j[''])];
+        });
+    }
+
+    /* Integer-keyed types coerce their offsets, as before — the strictness is
+       the string types' alone. */
+    foreach ([1 => 'BITSET', 2 => 'INT_TO_INT', 3 => 'INT_TO_MIXED', 6 => 'INT_TO_PACKED'] as $type => $name) {
+        $r["int/$name coerces offsets"] = capture(function () use ($class, $type) {
+            $j = new $class($type);
+            $v = fn() => $type === 1 ? true : ($type === 2 ? 1 : 'v');
+            $j['3'] = $v();
+            $j[4.9] = $v();
+            $j[true] = $v();
+            return [$j->count(), $j->keys(), isset($j['3']), isset($j[1])];
+        });
+    }
+
+    /* NOT covered, and deliberately: $j[] = 1. The extension answers append
+       with its own "values cannot be set without specifying a key" Exception,
+       but PHP hands offsetSet() a null offset for BOTH $j[] = 1 and
+       $j[null] = 1, so no userland class can tell them apart. This polyfill
+       reports the TypeError for both; the README lists it. */
+
+    return $r;
+});
+
+/* ── slice() bound types ─────────────────────────────────────────
+ *
+ * slice() rejects a non-string bound on a string-keyed array exactly as
+ * keys()/values()/toArray()/size() do, with its own method name in the message
+ * — but with two differences that a shared helper would quietly erase, so both
+ * are pinned:
+ *
+ *   1. ORDER. slice() checks the BYTES of both bounds before it minds their
+ *      types, the opposite of the bounded reads. slice(1, "a\0b") is therefore
+ *      the NUL Exception while keys(1, "a\0b") is the TypeError. (Those two
+ *      orderings are pinned in the embedded-NUL scenario, which is where the
+ *      \0 corpus lives; this one covers the types.)
+ *   2. NULL. The bounded reads default their bounds to null and read it as
+ *      "unbounded". slice() takes two REQUIRED arguments and rejects null like
+ *      any other non-string, so slice(null, null) throws where keys(null, null)
+ *      returns everything.
+ *
+ * And the guard is unconditional: unlike the offset handlers, slice() has no
+ * empty-array short circuit in front of it, so an empty array throws too.
+ *
+ * deleteRange() is the control. It takes the same two bounds and does NOT
+ * type-check them — deleteRange(1, 'z') coerces and deletes — so it is pinned
+ * alongside to keep a well-meaning refactor from giving it the check as well.
+ */
+scenario('string/slice bound types', function (string $class) {
+    $r = [];
+    $bounds = [
+        'int, int'       => [1, 2],
+        'int, string'    => [1, 'zz'],
+        'string, int'    => ['aa', 2],
+        'float, float'   => [1.5, 2.5],
+        'bool, bool'     => [true, false],
+        'null, string'   => [null, 'zz'],
+        'string, null'   => ['aa', null],
+        'null, null'     => [null, null],
+        'array, string'  => [['x'], 'zz'],
+        'object, string' => [new stdClass(), 'zz'],
+        'string, string' => ['aa', 'zz'],
+        'numeric string' => ['1', '9'],
+    ];
+
+    /* deleteRange() is the control below, but only over the bounds PHP can
+       COERCE. An array or object bound never reaches its Judy-level handling:
+       the extension declares a string parameter there, so the engine rejects
+       it first with its own "Argument #1 ($start) must be of type string,
+       array given". The polyfill takes mixed and converts, which diverges —
+       but that is a separate, pre-existing gap shared by first(), last(),
+       searchNext(), prev() and deleteRange() alike, about PHP's coercion
+       rules and not about these two type guards. Pinning it here would put an
+       unrelated failure inside this scenario.
+
+       The null bounds are left out for a duller reason: the extension declares
+       deleteRange()'s parameters non-nullable, so passing null there is a
+       deprecation on every call and would bury the suite's output in notices.
+       Whether null is a bound or "unbounded" is already settled above, by
+       slice() rejecting it and keys()/values()/toArray()/size() accepting it. */
+    $coercible = array_diff_key($bounds, array_flip([
+        'array, string', 'object, string', 'null, string', 'string, null', 'null, null',
+    ]));
+
+    foreach (STRING_KEYED as $type => $name) {
+        $intValued = in_array($type, [4, 8, 10], true);
+        $mk = function () use ($class, $type, $intValued) {
+            $j = new $class($type);
+            foreach (['aa', 'mm', 'zz'] as $i => $k) {
+                $j[$k] = $intValued ? $i : "v$i";
+            }
+            return $j;
+        };
+        $empty = fn() => new $class($type);
+
+        foreach ($bounds as $label => [$lo, $hi]) {
+            $r["$name slice($label)"] = capture(fn() => $mk()->slice($lo, $hi)->keys());
+            /* No empty-array reprieve here: the type guard runs either way. */
+            $r["$name slice($label) on empty"] = capture(fn() => $empty()->slice($lo, $hi)->keys());
+        }
+
+        /* The control: same bounds, no type check, coerced instead. */
+        foreach ($coercible as $label => [$lo, $hi]) {
+            $r["$name deleteRange($label)"] = capture(function () use ($mk, $lo, $hi) {
+                $j = $mk();
+                $n = $j->deleteRange($lo, $hi);
+                return [$n, $j->keys()];
+            });
+        }
+
+        /* The bounded reads reject the same int bounds, each naming ITSELF in
+           the message — which is why these compare messages and not just "did
+           it throw". And they accept null on both sides, where slice() does
+           not: that pair of checks is the null half of the difference. */
+        foreach ([
+            'keys'    => fn($j, $lo, $hi) => $j->keys($lo, $hi),
+            'values'  => fn($j, $lo, $hi) => $j->values($lo, $hi),
+            'toArray' => fn($j, $lo, $hi) => $j->toArray($lo, $hi),
+            'size'    => fn($j, $lo, $hi) => $j->size($lo, $hi),
+        ] as $method => $call) {
+            $r["$name $method(int, int)"] = capture(fn() => $call($mk(), 1, 2));
+            $r["$name $method(null, null)"] = capture(fn() => $call($mk(), null, null));
+        }
+    }
+
+    /* Integer-keyed types take integer bounds, as always. */
+    foreach ([1 => 'BITSET', 2 => 'INT_TO_INT', 3 => 'INT_TO_MIXED', 6 => 'INT_TO_PACKED'] as $type => $name) {
+        $r["int/$name slice takes ints"] = capture(function () use ($class, $type) {
+            $j = new $class($type);
+            foreach ([1, 5, 10] as $i) {
+                $j[$i] = $type === 1 ? true : ($type === 2 ? $i : "v$i");
+            }
+            return [$j->slice(1, 5)->keys(), $j->slice('1', '5')->keys(), $j->deleteRange(1, 5)];
+        });
+    }
+
+    return $r;
+});
+
 /* ── Bounded keys()/values()/toArray() ───────────────────────────
  *
  * The range arguments the signature check now pins also have to behave the

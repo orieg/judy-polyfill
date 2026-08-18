@@ -292,6 +292,10 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         // is the NUL-byte Exception natively, not a bound-type complaint.
         $this->assertBoundBytes($start);
         $this->assertBoundBytes($end);
+        // ...and only then minds their types. Both bounds are REQUIRED here,
+        // so null is rejected like any other non-string rather than read as
+        // "unbounded" the way keys()/values()/toArray()/size() read it.
+        $this->assertBoundTypes('slice', [$start, $end], nullable: false);
         $result = new static($this->type);
         $this->ensureSorted();
         foreach ($this->data as $k => $v) {
@@ -319,17 +323,23 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     /**
      * The three read/delete offset handlers answer an EMPTY array before they
      * look at the offset at all, so a key the array could never hold — an
-     * embedded NUL — reads back as absent rather than throwing. That is the
-     * extension's own ordering: its guard sits behind the null-array short
-     * circuit, and it holds however the array became empty (never written,
-     * unset, deleteRange()d or free()d). offsetSet() has no such path: it must
-     * take the key to store it, so it always throws.
+     * embedded NUL, or an offset of the wrong type entirely — reads back as
+     * absent rather than throwing. That is the extension's own ordering: BOTH
+     * of its offset guards sit behind the null-array short circuit, and it
+     * holds however the array became empty (never written, unset,
+     * deleteRange()d or free()d). offsetSet() has no such path: it must take
+     * the key to store it, so it always throws.
+     *
+     * Both guards then run in the extension's order — type first, bytes second
+     * — so $j[42] on a string-keyed array is the TypeError and $j["a\0b"] is
+     * the NUL Exception.
      */
     public function offsetExists(mixed $offset): bool
     {
         if ($this->data === []) {
             return false;
         }
+        $this->assertOffsetType($offset);
         return \array_key_exists($this->coerceKey($offset), $this->data);
     }
 
@@ -340,6 +350,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             // empty bitset returns null.
             return null;
         }
+        $this->assertOffsetType($offset);
         $key = $this->coerceKey($offset);
         if (!\array_key_exists($key, $this->data)) {
             return $this->type === self::BITSET ? false : null;
@@ -349,6 +360,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     public function offsetSet(mixed $offset, mixed $value): void
     {
+        $this->assertOffsetType($offset);
         $key = $this->coerceKey($offset);
         if ($this->type === self::BITSET) {
             if ((bool) $value) {
@@ -368,6 +380,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         if ($this->data === []) {
             return;
         }
+        $this->assertOffsetType($offset);
         unset($this->data[$this->coerceKey($offset)]);
     }
 
@@ -640,6 +653,38 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return \in_array($this->type, self::INT_KEYED, true);
     }
 
+    /**
+     * An ArrayAccess offset on a string-keyed array must ALREADY be a string.
+     *
+     * This is the one place the extension refuses to coerce. Every other key
+     * path on these types casts happily — putAll(['1' => ...]) and putAll([1
+     * => ...]) both store the key "1", and getAll(), fromArray(), increment()
+     * and the seeks all do the same — so the strictness is a property of the
+     * offset syntax, not of string keys. The asymmetry is deliberate on the
+     * extension's side and pinned by the parity suite, because a polyfill that
+     * "tidied it up" in either direction would break real callers: coercing
+     * here hides a bug the extension reports, and rejecting in putAll() breaks
+     * array literals with numeric keys, which PHP itself has already turned
+     * into ints before the method sees them.
+     *
+     * Only the type is checked. The bytes are the NUL guard's business, and it
+     * runs after this — a non-string offset never reaches it, exactly as in the
+     * extension's own CHECK_ARRAY_AND_ARG_TYPE.
+     *
+     * Unavoidable ambiguity: PHP passes null for BOTH $j[null] = 1 and the
+     * append form $j[] = 1, so userland cannot tell them apart. The extension
+     * can, and answers the append with its own "values cannot be set without
+     * specifying a key" Exception. This class reports the TypeError for both;
+     * see the README's known divergences.
+     */
+    private function assertOffsetType(mixed $offset): void
+    {
+        if ($this->intKeyed() || \is_string($offset)) {
+            return;
+        }
+        throw new \TypeError('Judy offset must be of type string for string-based arrays');
+    }
+
     private function coerceKey(mixed $offset): int|string
     {
         if ($this->intKeyed()) {
@@ -852,22 +897,40 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
      * a non-string bound outright rather than coercing it. null is always fine:
      * it means "unbounded on that side", not "a bound".
      */
-    private function assertRangeBounds(string $method, mixed $start, mixed $end): void
+    /**
+     * The bound-type rejection itself, shared by slice() and the four bounded
+     * reads. $nullable is the whole difference between the callers: keys(),
+     * values(), toArray() and size() DEFAULT their bounds to null and read it
+     * as "unbounded", while slice() takes two required arguments and rejects
+     * null like any other non-string.
+     *
+     * The callers differ again in when they run this relative to the NUL-byte
+     * check, which is why it is a separate method from assertRangeBounds()
+     * rather than folded into it — see slice() and the note below.
+     */
+    private function assertBoundTypes(string $method, array $bounds, bool $nullable): void
     {
         if ($this->intKeyed()) {
             return;
         }
+        foreach ($bounds as $bound) {
+            if (\is_string($bound) || ($nullable && $bound === null)) {
+                continue;
+            }
+            throw new \TypeError(
+                "Judy::$method() expects string arguments for string-keyed arrays"
+            );
+        }
+    }
+
+    private function assertRangeBounds(string $method, mixed $start, mixed $end): void
+    {
         // Two passes, not one: the extension rejects a non-string bound on
         // EITHER side before it inspects the bytes of either, so keys("a\0b", 1)
         // is the TypeError and not the NUL-byte Exception. An interleaved loop
-        // would report the second problem first.
-        foreach ([$start, $end] as $bound) {
-            if ($bound !== null && !\is_string($bound)) {
-                throw new \TypeError(
-                    "Judy::$method() expects string arguments for string-keyed arrays"
-                );
-            }
-        }
+        // would report the second problem first — and slice() runs these two
+        // in the opposite order, which is the reason they are separable at all.
+        $this->assertBoundTypes($method, [$start, $end], nullable: true);
         foreach ([$start, $end] as $bound) {
             $this->assertBoundBytes($bound);
         }
