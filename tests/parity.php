@@ -426,6 +426,56 @@ scenario('string/increment', function (string $class) {
     return $r;
 });
 
+/* ── Numeric-looking keys on string-keyed types ──────────────────
+ *
+ * A PHP array cannot hold the string key "42" — the engine coerces canonical
+ * decimal integers in PHP_INT range. The polyfill stores rows in a PHP array,
+ * so anything derived from array_keys() leaks int(42) where the extension,
+ * which builds its list with add_next_index_string(), returns "42".
+ *
+ * This shipped in v2.5.0 because the suite tested numeric keys and tested
+ * keys(), but never together: the keys/values scenarios all used
+ * fruit-shaped keys. Types are asserted explicitly here rather than relying
+ * on value comparison, since "42" and 42 compare loosely equal and would
+ * otherwise slip through.
+ *
+ * toArray() is the deliberate exception — it returns a PHP array, so BOTH
+ * sides coerce and agreeing on int keys there is correct behaviour, not drift.
+ */
+scenario('string/numeric-key types', function (string $class) {
+    $r = [];
+    $keys = ['42', '-7', '07', '0', '9223372036854775807', 'user.3'];
+    foreach ([4 => 'STRING_TO_INT', 7 => 'STRING_TO_MIXED_HASH', 10 => 'STRING_TO_INT_ADAPTIVE'] as $type => $name) {
+        $j = new $class($type);
+        foreach ($keys as $i => $k) {
+            $j[$k] = $i;
+        }
+        $types = fn(array $a) => implode(',', array_map('gettype', $a));
+
+        $r["$name keys() types"] = capture(fn() => $types($j->keys()));
+        $r["$name keys(bounded) types"] = capture(fn() => $types($j->keys('-7', 'user.3')));
+        $r["$name foreach key types"] = capture(function () use ($j) {
+            $out = [];
+            foreach ($j as $k => $v) { $out[] = gettype($k); }
+            return implode(',', $out);
+        });
+        $r["$name seek types"] = capture(fn() => $types(array_filter(
+            [$j->first(), $j->last(), $j->searchNext('0'), $j->prev('user.3')],
+            fn($x) => $x !== null
+        )));
+        /* Round-trip: every key keys() hands back must be a usable offset. */
+        $r["$name keys() round-trip"] = capture(function () use ($j) {
+            foreach ($j->keys() as $k) {
+                if (!isset($j[$k])) { return "not set: " . var_export($k, true); }
+            }
+            return 'all keys round-trip';
+        });
+        /* toArray() coerces on both sides — pinned so nobody "fixes" it. */
+        $r["$name toArray() coerces"] = capture(fn() => $types(array_keys($j->toArray())));
+    }
+    return $r;
+});
+
 /* ── Bounded keys()/values()/toArray() ───────────────────────────
  *
  * The range arguments the signature check now pins also have to behave the
