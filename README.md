@@ -45,7 +45,7 @@ by a native PHP array:
 - ✅ All 10 Judy type constants, full method surface of ext-judy 2.5
 - ✅ Same coercion, ordering, exception, and edge-case semantics — verified
   by a [parity suite](tests/parity.php) that runs every covered scenario
-  against both implementations in CI (785 checks)
+  against both implementations in CI (1471 checks)
 - ✅ **Signature** parity too, not just behavior: the suite reflects over both
   classes and diffs every public method's parameters, defaults and return type.
   Behavior parity alone cannot catch "the method exists but will not accept
@@ -65,6 +65,14 @@ by a native PHP array:
   does this class, on every method that takes a key or a range bound. `0x00` is
   the only byte treated this way — `0x80`–`0xFF` keys store, round-trip and sort
   in unsigned byte order on both sides, and the empty string is a valid key
+- ⚠️ On string-keyed types an **ArrayAccess offset is not coerced**: `$j[42]`
+  is a `TypeError`, not the key `"42"`. This is the only place the extension
+  refuses to coerce — `putAll([1 => 'x'])`, `getAll([1])`, `fromArray()`,
+  `increment()` and the seeks all cast to `"1"` as usual — so it is a property
+  of the offset syntax rather than of string keys, and this class matches both
+  halves. `slice()` is strict about its bounds the same way, and rejects `null`
+  there too, where `keys()`/`values()`/`toArray()`/`size()` read `null` as
+  "unbounded"
 - ⚠️ `$optimizeIteration` (constructor, `fromArray()`) is accepted and ignored,
   and `isIterationOptimized()` always returns `false`. It is a native-memory
   read/write trade with no meaning for a PHP array — and the extension's own
@@ -75,6 +83,18 @@ by a native PHP array:
 
 - Iteration while mutating is undefined in both implementations, and the
   undefined behavior differs.
+- `$j[] = 1` on a string-keyed array reports the offset `TypeError` here, where
+  the extension raises its own "values cannot be set without specifying a key"
+  Exception. PHP passes `offsetSet()` a null offset for both `$j[] = 1` and
+  `$j[null] = 1`, so no userland class can tell the two apart; the extension
+  can. Both forms are errors on both sides — only the class and message differ.
+- An **array or object** passed where a key or bound is expected diverges on
+  `deleteRange()`, `first()`, `last()`, `searchNext()` and `prev()`: the
+  extension declares a string parameter and the engine rejects it with
+  `Argument #1 ($start) must be of type string, array given`, while this class
+  takes `mixed` and converts. The methods that type-check their own bounds —
+  `slice()`, `keys()`, `values()`, `toArray()`, `size()` — and every
+  ArrayAccess offset agree on both sides.
 
 `size($start, $end)` with **string** bounds used to be listed here, back when
 the extension ignored the bounds and returned the whole-array count. It counts
@@ -105,9 +125,9 @@ version it wants:
 
 ```
 SKIP [string/embedded-NUL keys] needs ext-judy >= 2.5.1, have 2.5.0
-ext-judy 2.4.2: 298 checks, 0 divergences, 11 skipped (need a newer extension)
-ext-judy 2.5.0: 554 checks, 0 divergences, 1 skipped (need a newer extension)
-ext-judy 2.5.1: 785 checks, 0 divergences
+ext-judy 2.4.2: 984 checks, 0 divergences, 11 skipped (need a newer extension)
+ext-judy 2.5.0: 1240 checks, 0 divergences, 1 skipped (need a newer extension)
+ext-judy 2.5.1: 1471 checks, 0 divergences
 ```
 
 Nothing is silently dropped, and the suite strengthens on its own the moment
