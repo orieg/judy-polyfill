@@ -108,6 +108,109 @@ check('string size unbounded', 3, $s->size());
 check('string size ranged', 1, $s->size('a', 'b'));
 check('string size agrees with keys', true, $s->size('a', 'b') === count($s->keys('a', 'b')));
 
+/* String keys must not contain 0x00 (ext-judy 2.5.1, php-judy#117).
+ *
+ * A PHP array would store "ab\0cd" perfectly well; JudySL indexes
+ * NUL-TERMINATED C strings and cannot, and the hash and adaptive types share
+ * that trie for every seek and range. Asserted here as well as in the parity
+ * suite because parity SKIPS this until PIE ships 2.5.1, and an unasserted
+ * rejection is one refactor away from disappearing. The two adaptive types
+ * share one message; the other four name themselves. */
+$nulKey = "ab\x00cd";
+foreach ([
+    $judyClass::STRING_TO_INT            => 'Judy STRING_TO_INT keys must not contain embedded null bytes',
+    $judyClass::STRING_TO_MIXED          => 'Judy STRING_TO_MIXED keys must not contain embedded null bytes',
+    $judyClass::STRING_TO_MIXED_HASH     => 'Judy STRING_TO_MIXED_HASH keys must not contain embedded null bytes',
+    $judyClass::STRING_TO_INT_HASH       => 'Judy STRING_TO_INT_HASH keys must not contain embedded null bytes',
+    $judyClass::STRING_TO_MIXED_ADAPTIVE => 'Judy adaptive keys must not contain embedded null bytes',
+    $judyClass::STRING_TO_INT_ADAPTIVE   => 'Judy adaptive keys must not contain embedded null bytes',
+] as $nulType => $message) {
+    $msg = function (callable $fn): string {
+        try {
+            $fn();
+            return 'nothing thrown';
+        } catch (\Throwable $e) {
+            return $e->getMessage();
+        }
+    };
+    $populated = function () use ($judyClass, $nulType) {
+        $n = new $judyClass($nulType);
+        $n['aa'] = 1;
+        $n['zz'] = 2;
+        return $n;
+    };
+    foreach ([
+        'offsetSet'   => function () use ($populated, $nulKey) { $n = $populated(); $n[$nulKey] = 1; },
+        'offsetGet'   => fn() => $populated()[$nulKey],
+        'offsetExists' => fn() => isset($populated()[$nulKey]),
+        'offsetUnset' => function () use ($populated, $nulKey) { $n = $populated(); unset($n[$nulKey]); },
+        'first'       => fn() => $populated()->first($nulKey),
+        'last'        => fn() => $populated()->last($nulKey),
+        'searchNext'  => fn() => $populated()->searchNext($nulKey),
+        'prev'        => fn() => $populated()->prev($nulKey),
+        'keys start'  => fn() => $populated()->keys($nulKey, null),
+        'keys end'    => fn() => $populated()->keys(null, $nulKey),
+        'values'      => fn() => $populated()->values($nulKey, null),
+        'toArray'     => fn() => $populated()->toArray($nulKey, null),
+        'size'        => fn() => $populated()->size($nulKey, null),
+        'slice'       => fn() => $populated()->slice($nulKey, 'zz'),
+        'deleteRange' => fn() => $populated()->deleteRange('aa', $nulKey),
+        'getAll'      => fn() => $populated()->getAll([$nulKey]),
+        'putAll'      => fn() => $populated()->putAll([$nulKey => 1]),
+        'fromArray'   => fn() => $judyClass::fromArray($nulType, [$nulKey => 1]),
+    ] as $label => $call) {
+        check("NUL rejected by $label on type $nulType", $message, $msg($call));
+    }
+    // Not a write path, so it is guarded on all six; increment() reports the
+    // type restriction first where the type cannot increment at all.
+    check("NUL rejected by increment on type $nulType",
+        in_array($nulType, [$judyClass::STRING_TO_INT, $judyClass::STRING_TO_INT_HASH], true)
+            ? $message
+            : 'Judy::increment() is only supported for INT_TO_INT, STRING_TO_INT and STRING_TO_INT_HASH types',
+        $msg(fn() => $populated()->increment($nulKey)));
+
+    // The three read/delete offset handlers answer an EMPTY array before they
+    // look at the offset, so there the unrepresentable key reads back absent.
+    $emptied = new $judyClass($nulType);
+    $emptied['gone'] = 1;
+    unset($emptied['gone']);
+    check("NUL reads absent on empty type $nulType",
+        [null, false, 0],
+        (function () use ($emptied, $nulKey) {
+            $got = $emptied[$nulKey];
+            $has = isset($emptied[$nulKey]);
+            unset($emptied[$nulKey]);
+            return [$got, $has, count($emptied)];
+        })());
+    // Position is irrelevant, and the empty string is still a fine key.
+    foreach (["\x00lead", "trail\x00", "\x00"] as $variant) {
+        check("NUL anywhere rejected on type $nulType", $message,
+            $msg(function () use ($judyClass, $nulType, $variant) {
+                $n = new $judyClass($nulType);
+                $n[$variant] = 1;
+            }));
+    }
+    $blank = new $judyClass($nulType);
+    $blank[''] = 7;
+    check("empty string is a key on type $nulType", [1, [''], 7], [count($blank), $blank->keys(), $blank['']]);
+}
+// 0x00 is the ONLY rejected byte: 0x80-0xFF store and sort in unsigned order,
+// which is what prefix-successor range bounds are carry arithmetic over.
+$hi = new $judyClass($judyClass::STRING_TO_MIXED);
+foreach (["\x7f", "\x80", "\xfe", "\xff", "ab\xff", "ac"] as $i => $hiKey) {
+    $hi[$hiKey] = $i;
+}
+// 0x80 sorts ABOVE 0x7f, which a signed-char comparison would get backwards.
+check('high bytes sort unsigned',
+    ['6162ff', '6163', '7f', '80', 'fe', 'ff'],
+    array_map('bin2hex', $hi->keys()));
+check('high bytes round-trip', [true, 3, "\xff"], [isset($hi["\xff"]), $hi["\xff"], $hi->last()]);
+// Everything under the prefix "ab" ends at "ab\xff"; "ac" is the successor.
+check('prefix successor bound',
+    [['6162ff'], ['6162ff', '6163']],
+    [array_map('bin2hex', $hi->keys('ab', "ab\xff")), array_map('bin2hex', $hi->keys('ab', 'ac'))]);
+check('high-byte range', 3, $hi->size("\x80", "\xff"));
+
 // Hash types iterate sorted too (verified against native)
 $h = new $judyClass($judyClass::STRING_TO_INT_HASH);
 $h['z'] = 26; $h['a'] = 1; $h['m'] = 13;
