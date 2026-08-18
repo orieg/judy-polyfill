@@ -45,3 +45,39 @@ jobs:
         run: php tests/parity.php
       - name: Behavior tests (with extension loaded)
         run: php tests/behavior.php
+
+  # PIE installs the LATEST released extension, so the version gates in the
+  # parity suite — requires: '2.5.0', requires: '2.5.1' — were never exercised
+  # by CI. Three separate rounds of scenarios reached main containing calls a
+  # pre-2.5.0 extension cannot accept, each invisible until someone ran an old
+  # build by hand. This job builds the older tags from source and runs parity
+  # against them, so a missing gate fails the PR that introduces it.
+  parity-legacy:
+    name: parity (ext-judy ${{ matrix.ext-version }}, from source)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ext-version: ["v2.4.2", "v2.5.0"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: orieg/php-judy
+          ref: ${{ matrix.ext-version }}
+          path: ext-src
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+      - name: Build ext-judy ${{ matrix.ext-version }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y libjudy-dev
+          cd ext-src
+          phpize
+          ./configure --with-judy=/usr
+          make -j"$(nproc)"
+          php -d extension="$PWD/modules/judy.so" -r 'echo "ext-judy ", judy_version(), PHP_EOL;'
+      - name: Parity tests (polyfill vs native)
+        run: php -d extension="$PWD/ext-src/modules/judy.so" tests/parity.php
+      - name: Behavior tests (with extension loaded)
+        run: php -d extension="$PWD/ext-src/modules/judy.so" tests/behavior.php
