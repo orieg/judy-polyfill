@@ -45,7 +45,7 @@ by a native PHP array:
 - ✅ All 10 Judy type constants, full method surface of ext-judy 2.5
 - ✅ Same coercion, ordering, exception, and edge-case semantics — verified
   by a [parity suite](tests/parity.php) that runs every covered scenario
-  against both implementations in CI (458 checks)
+  against both implementations in CI (785 checks)
 - ✅ **Signature** parity too, not just behavior: the suite reflects over both
   classes and diffs every public method's parameters, defaults and return type.
   Behavior parity alone cannot catch "the method exists but will not accept
@@ -57,6 +57,14 @@ by a native PHP array:
   allocator accounting to read there) and the two approximations are composed
   the same way but will not match byte-for-byte; only the *shape* is a parity
   target
+- ⚠️ String keys must not contain a **NUL byte** (`0x00`), anywhere in them.
+  A PHP array is binary-safe and would store `"ab\0cd"` happily; JudySL indexes
+  NUL-*terminated* C strings and cannot, and the hash and adaptive types share
+  that trie for every seek and range. The extension rejects such a key from
+  2.5.1 ([php-judy#117](https://github.com/orieg/php-judy/issues/117)) and so
+  does this class, on every method that takes a key or a range bound. `0x00` is
+  the only byte treated this way — `0x80`–`0xFF` keys store, round-trip and sort
+  in unsigned byte order on both sides, and the empty string is a valid key
 - ⚠️ `$optimizeIteration` (constructor, `fromArray()`) is accepted and ignored,
   and `isIterationOptimized()` always returns `false`. It is a native-memory
   read/write trade with no meaning for a PHP array — and the extension's own
@@ -65,17 +73,17 @@ by a native PHP array:
 
 ### Known divergences
 
-- `size($start, $end)` with **string** bounds counts the range here; the
-  extension currently ignores the bounds and returns the whole-array count
-  ([php-judy#105](https://github.com/orieg/php-judy/issues/105)). This is the
-  one place the polyfill is deliberately *more* correct than the extension:
-  matching it would mean baking in a wrong answer that is about to be fixed.
-  Expected to resolve itself when that issue lands.
 - Iteration while mutating is undefined in both implementations, and the
   undefined behavior differs.
 
-Empty-slot scans at the unsigned 64-bit boundary used to be listed here. They
-now agree: integer keys are compared and stepped as unsigned words, so
+`size($start, $end)` with **string** bounds used to be listed here, back when
+the extension ignored the bounds and returned the whole-array count. It counts
+the range on both sides since ext-judy 2.5.0
+([php-judy#105](https://github.com/orieg/php-judy/issues/105)), and the parity
+suite pins it.
+
+Empty-slot scans at the unsigned 64-bit boundary used to be listed here too.
+They now agree: integer keys are compared and stepped as unsigned words, so
 `firstEmpty(PHP_INT_MAX)` returns `PHP_INT_MIN` rather than overflowing to a
 float, and running off either end returns `null` instead of wrapping.
 
@@ -96,9 +104,10 @@ needs a newer extension than the one loaded is skipped and named, with the
 version it wants:
 
 ```
-SKIP [range/int] needs ext-judy >= 2.5.0, have 2.4.2
+SKIP [string/embedded-NUL keys] needs ext-judy >= 2.5.1, have 2.5.0
 ext-judy 2.4.2: 298 checks, 0 divergences, 11 skipped (need a newer extension)
-ext-judy 2.5.0: 458 checks, 0 divergences
+ext-judy 2.5.0: 554 checks, 0 divergences, 1 skipped (need a newer extension)
+ext-judy 2.5.1: 785 checks, 0 divergences
 ```
 
 Nothing is silently dropped, and the suite strengthens on its own the moment
