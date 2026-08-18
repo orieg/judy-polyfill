@@ -35,6 +35,28 @@ function throws(string $label, string $class, callable $fn): void
     }
 }
 
+/** Assert both the exception class AND its message — the message IS the parity. */
+function throwsWith(string $label, string $class, string $message, callable $fn): void
+{
+    global $failures;
+    try {
+        $fn();
+        $failures++;
+        echo "FAIL $label: expected $class, nothing thrown\n";
+        return;
+    } catch (\Throwable $e) {
+        if (!($e instanceof $class)) {
+            $failures++;
+            echo "FAIL $label: expected $class, got ", get_class($e), ": ", $e->getMessage(), "\n";
+            return;
+        }
+        if ($e->getMessage() !== $message) {
+            $failures++;
+            echo "FAIL $label: message\n  expected: ", json_encode($message), "\n  actual:   ", json_encode($e->getMessage()), "\n";
+        }
+    }
+}
+
 $judyClass = \Orieg\JudyPolyfill\Judy::class;
 
 // Bootstrap aliases the global names when ext-judy is absent.
@@ -210,6 +232,182 @@ check('prefix successor bound',
     [['6162ff'], ['6162ff', '6163']],
     [array_map('bin2hex', $hi->keys('ab', "ab\xff")), array_map('bin2hex', $hi->keys('ab', 'ac'))]);
 check('high-byte range', 3, $hi->size("\x80", "\xff"));
+
+// ── ArrayAccess offsets are NOT coerced on string-keyed types ──────
+// The one place the extension refuses to coerce. Everything else on those
+// types casts: putAll([1 => ...]) stores "1", and so do getAll(), fromArray(),
+// increment() and the seeks. Both halves are asserted, because "tidying up"
+// either direction would break callers written against the extension.
+const OFFSET_TYPE_ERROR = 'Judy offset must be of type string for string-based arrays';
+
+$stringKeyed = [
+    $judyClass::STRING_TO_INT, $judyClass::STRING_TO_MIXED,
+    $judyClass::STRING_TO_MIXED_HASH, $judyClass::STRING_TO_INT_HASH,
+    $judyClass::STRING_TO_MIXED_ADAPTIVE, $judyClass::STRING_TO_INT_ADAPTIVE,
+];
+
+foreach ($stringKeyed as $sType) {
+    $intValued = in_array($sType, [
+        $judyClass::STRING_TO_INT, $judyClass::STRING_TO_INT_HASH,
+        $judyClass::STRING_TO_INT_ADAPTIVE,
+    ], true);
+    $v = $intValued ? 1 : 'v';
+    $full = function () use ($judyClass, $sType, $v) {
+        $n = new $judyClass($sType);
+        $n['aa'] = $v;
+        $n['zz'] = $v;
+        return $n;
+    };
+
+    foreach (['int' => 42, 'zero' => 0, 'float' => 1.5, 'true' => true, 'false' => false,
+              'null' => null, 'array' => ['x'], 'object' => new stdClass()] as $what => $offset) {
+        // Populated: all four handlers reject, before any key coercion.
+        throwsWith("offset $what rejected by offsetSet on type $sType", \TypeError::class, OFFSET_TYPE_ERROR,
+            function () use ($full, $offset, $v) { $n = $full(); $n[$offset] = $v; });
+        throwsWith("offset $what rejected by offsetGet on type $sType", \TypeError::class, OFFSET_TYPE_ERROR,
+            fn() => $full()[$offset]);
+        throwsWith("offset $what rejected by offsetExists on type $sType", \TypeError::class, OFFSET_TYPE_ERROR,
+            fn() => isset($full()[$offset]));
+        throwsWith("offset $what rejected by offsetUnset on type $sType", \TypeError::class, OFFSET_TYPE_ERROR,
+            function () use ($full, $offset) { $n = $full(); unset($n[$offset]); });
+
+        // Empty: the three read/delete handlers answer before they look at the
+        // offset at all — the same reprieve the NUL guard gets — while
+        // offsetSet() has no such path and still throws.
+        $blank = new $judyClass($sType);
+        check("offset $what reads absent on empty type $sType", [null, false, 0],
+            (function () use ($blank, $offset) {
+                $got = $blank[$offset];
+                $has = isset($blank[$offset]);
+                unset($blank[$offset]);
+                return [$got, $has, count($blank)];
+            })());
+        throwsWith("offset $what still rejected by offsetSet on empty type $sType",
+            \TypeError::class, OFFSET_TYPE_ERROR,
+            function () use ($judyClass, $sType, $offset, $v) { $n = new $judyClass($sType); $n[$offset] = $v; });
+    }
+
+    // The reprieve holds however the array became empty, not only when it was
+    // never written to.
+    foreach ([
+        'unset'       => function ($n) { unset($n['aa'], $n['zz']); },
+        'deleteRange' => function ($n) { $n->deleteRange('a', 'zzz'); },
+        'free'        => function ($n) { $n->free(); },
+    ] as $how => $drain) {
+        $drained = $full();
+        $drain($drained);
+        check("offset int reads absent after $how on type $sType", [0, null, false],
+            [count($drained), $drained[42], isset($drained[42])]);
+    }
+
+    // The other half: every non-offset key path still coerces.
+    $p = new $judyClass($sType);
+    $p->putAll([1 => $v, true => $v]);
+    check("putAll coerces keys on type $sType", ['1'], $p->keys());
+    check("fromArray coerces keys on type $sType", ['1'],
+        $judyClass::fromArray($sType, [1 => $v])->keys());
+    $g = $full();
+    $g['1'] = $v;
+    check("getAll coerces keys on type $sType", ['1' => $v], $g->getAll([1]));
+    check("seeks coerce on type $sType", ['aa', 'aa'],
+        [$full()->first(1), $full()->searchNext(1)]);
+    // increment() is narrower than "int-valued" — the adaptive int type cannot
+    // increment at all — so only the two that can are asserted here.
+    if (in_array($sType, [$judyClass::STRING_TO_INT, $judyClass::STRING_TO_INT_HASH], true)) {
+        $inc = $full();
+        $inc->increment(1);
+        check("increment coerces on type $sType", ['1', 'aa', 'zz'], $inc->keys());
+    }
+
+    // A numeric STRING offset is a string, so it is accepted — which is what
+    // makes the rejection a type rule and not a "looks numeric" rule.
+    $numeric = $full();
+    $numeric['42'] = $v;
+    check("numeric string offset accepted on type $sType", [3, $v, true],
+        [count($numeric), $numeric['42'], isset($numeric['42'])]);
+}
+
+// Integer-keyed types coerce their offsets, as they always did.
+foreach ([$judyClass::BITSET, $judyClass::INT_TO_INT,
+          $judyClass::INT_TO_MIXED, $judyClass::INT_TO_PACKED] as $iType) {
+    $iv = $iType === $judyClass::BITSET ? true : ($iType === $judyClass::INT_TO_INT ? 1 : 'v');
+    $ik = new $judyClass($iType);
+    $ik['3'] = $iv;
+    $ik[4.9] = $iv;
+    $ik[true] = $iv;
+    check("int-keyed type $iType coerces offsets", [[1, 3, 4], true, true],
+        [$ik->keys(), isset($ik[1]), isset($ik['3'])]);
+}
+
+// ── slice() bound types ───────────────────────────────────────────
+// slice() rejects a non-string bound like keys()/values()/toArray()/size() do,
+// with two differences that are asserted rather than assumed: it rejects null
+// too (its bounds are required, not "unbounded"), and it has no empty-array
+// short circuit in front of it. deleteRange() takes the same two bounds and
+// does NOT type-check them, which is the control.
+foreach ($stringKeyed as $sType) {
+    $intValued = in_array($sType, [
+        $judyClass::STRING_TO_INT, $judyClass::STRING_TO_INT_HASH,
+        $judyClass::STRING_TO_INT_ADAPTIVE,
+    ], true);
+    $ranged = function () use ($judyClass, $sType, $intValued) {
+        $n = new $judyClass($sType);
+        foreach (['aa', 'mm', 'zz'] as $i => $k) {
+            $n[$k] = $intValued ? $i : "v$i";
+        }
+        return $n;
+    };
+    foreach (['int, int' => [1, 2], 'int, string' => [1, 'zz'], 'string, int' => ['aa', 2],
+              'float' => [1.5, 2.5], 'bool' => [true, false], 'array' => [['x'], 'zz'],
+              'null, null' => [null, null], 'null, string' => [null, 'zz'],
+              'string, null' => ['aa', null]] as $what => [$lo, $hi]) {
+        throwsWith("slice($what) rejected on type $sType", \TypeError::class,
+            'Judy::slice() expects string arguments for string-keyed arrays',
+            fn() => $ranged()->slice($lo, $hi));
+        // No empty-array reprieve: the guard runs either way.
+        throwsWith("slice($what) rejected on empty type $sType", \TypeError::class,
+            'Judy::slice() expects string arguments for string-keyed arrays',
+            fn() => (new $judyClass($sType))->slice($lo, $hi));
+    }
+    // String bounds work, including numeric-looking ones.
+    check("slice string bounds on type $sType", [['aa', 'mm'], []],
+        [$ranged()->slice('aa', 'mm')->keys(), $ranged()->slice('1', '9')->keys()]);
+
+    // The bounded reads name themselves in the same complaint...
+    foreach (['keys', 'values', 'toArray', 'size'] as $method) {
+        throwsWith("$method(int, int) rejected on type $sType", \TypeError::class,
+            "Judy::$method() expects string arguments for string-keyed arrays",
+            fn() => $ranged()->$method(1, 2));
+    }
+    // ...but they read null as "unbounded", where slice() rejects it.
+    $rd = $ranged();
+    check("bounded reads accept null bounds on type $sType",
+        [['aa', 'mm', 'zz'], 3, 3, 3],
+        [$rd->keys(null, null), count($rd->values(null, null)),
+         count($rd->toArray(null, null)), $rd->size(null, null)]);
+
+    // The control: deleteRange() coerces its bounds and deletes.
+    check("deleteRange coerces bounds on type $sType", [3, []],
+        (function () use ($ranged) {
+            $n = $ranged();
+            $deleted = $n->deleteRange(1, 'zzz');
+            return [$deleted, $n->keys()];
+        })());
+    check("deleteRange int bounds delete nothing on type $sType", [0, ['aa', 'mm', 'zz']],
+        (function () use ($ranged) {
+            $n = $ranged();
+            $deleted = $n->deleteRange(1, 2);
+            return [$deleted, $n->keys()];
+        })());
+}
+
+// Integer-keyed slice takes integer bounds, as always.
+$is = new $judyClass($judyClass::INT_TO_MIXED);
+foreach ([1, 5, 10] as $i) {
+    $is[$i] = "v$i";
+}
+check('int-keyed slice takes int bounds', [[1, 5], [1, 5]],
+    [$is->slice(1, 5)->keys(), $is->slice('1', '5')->keys()]);
 
 // Hash types iterate sorted too (verified against native)
 $h = new $judyClass($judyClass::STRING_TO_INT_HASH);
