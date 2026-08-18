@@ -6,13 +6,13 @@ namespace Orieg\JudyPolyfill;
  * Pure-PHP implementation of the Judy class from the judy extension
  * (https://github.com/orieg/php-judy).
  *
- * API-compatible with ext-judy 2.4; backed by a native PHP array, so it
+ * API-compatible with ext-judy 2.5; backed by a native PHP array, so it
  * provides compatibility, not the extension's memory/performance profile.
  * Behavioral notes and known divergences are documented in the README.
  */
 class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 {
-    public const POLYFILL_VERSION = '2.4.2-polyfill';
+    public const POLYFILL_VERSION = '2.5.0-polyfill';
 
     public const BITSET = 1;
     public const INT_TO_INT = 2;
@@ -38,7 +38,18 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     private array $iterKeys = [];
     private int $iterPos = 0;
 
-    public function __construct(int $type)
+    /**
+     * $optimizeIteration is accepted and ignored.
+     *
+     * In the extension it trades write speed for ordered-read speed by keeping
+     * a second copy of each payload in the key index. That is a native-memory
+     * trade with no meaning for a PHP array, and the extension's own contract
+     * already covers being unable to honour it: types that cannot mirror accept
+     * the argument and report false from isIterationOptimized(). The polyfill is
+     * simply always in that position, so generic code can pass the flag
+     * unconditionally against either implementation.
+     */
+    public function __construct(int $type, bool $optimizeIteration = false)
     {
         if ($type < self::BITSET || $type > self::STRING_TO_INT_ADAPTIVE) {
             throw new \Exception('Judy::__construct(): Not a valid Judy type. Please check the documentation for valid Judy type constant.');
@@ -57,6 +68,12 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $this->type;
     }
 
+    /** Always false: a PHP array has no key index to mirror into. */
+    public function isIterationOptimized(): bool
+    {
+        return false;
+    }
+
     public function free(): int
     {
         $bytes = $this->estimateBytes();
@@ -65,20 +82,44 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $bytes;
     }
 
+    /**
+     * Approximate bytes. Never null for an initialised array, and 0 when empty.
+     *
+     * The extension returns two different kinds of number here and documents
+     * both: an EXACT libJudy figure for integer-keyed types, and — since it
+     * gained string-keyed accounting — an APPROXIMATE payload-only figure for
+     * string-keyed ones, because JudySL/JudyHS expose no accounting of their
+     * own. Neither is reproducible from a PHP array, so this is an estimate of
+     * the same *shape*: useful for tracking growth within one array, not
+     * comparable byte-for-byte against the extension.
+     */
     public function memoryUsage(): ?int
     {
-        if (!$this->intKeyed()) {
-            return null; // matches ext: JudySL/JudyHS provide no accounting
+        if ($this->intKeyed()) {
+            return $this->estimateBytes();
         }
-        return $this->estimateBytes();
+        return $this->estimateStringBytes();
     }
 
-    public function size(mixed $index_start = 0, mixed $index_end = -1): int
+    /**
+     * Count the keys in the inclusive [$start, $end] range, or all of them
+     * when both bounds are omitted.
+     *
+     * The bounds are keys, not offsets, and they follow the same rules as
+     * keys()/values()/toArray(): integer keys compare as unsigned words (so
+     * size(0, -1) is the whole array, -1 being the maximum), and string-keyed
+     * arrays compare lexicographically and reject non-string bounds.
+     *
+     * Unlike populationCount(), which reads libJudy's population cache and is
+     * therefore integer-keyed only, size() ranges over every type.
+     */
+    public function size(mixed $start = null, mixed $end = null): int
     {
-        if ($index_start === 0 && $index_end === -1) {
+        if ($start === null && $end === null) {
             return \count($this->data);
         }
-        return $this->countRange($index_start, $index_end);
+        $this->assertRangeBounds('size', $start, $end);
+        return \count($this->rangeKeys($start, $end));
     }
 
     public function count(): int
@@ -130,7 +171,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     public function nextEmpty(mixed $index): mixed
     {
         $this->assertIntArg($index, __FUNCTION__, nullable: false);
-        return $this->seekEmpty((int) $index + 1, forward: true);
+        // Exclusive: step one key up in unsigned order first, and there is
+        // nothing above -1 to step to.
+        return $this->seekEmpty(self::unsignedSucc((int) $index), forward: true);
     }
 
     public function lastEmpty(mixed $index = null): mixed
@@ -144,7 +187,8 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     public function prevEmpty(mixed $index): mixed
     {
         $this->assertIntArg($index, __FUNCTION__, nullable: false);
-        return $this->seekEmpty((int) $index - 1, forward: false);
+        // Exclusive: step one key down in unsigned order, nothing below 0.
+        return $this->seekEmpty(self::unsignedPred((int) $index), forward: false);
     }
 
     /* ── Set operations ───────────────────────────────────────── */
@@ -311,16 +355,29 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     /* ── Batch operations ─────────────────────────────────────── */
 
-    public function toArray(): array
+    public function toArray(mixed $start = null, mixed $end = null): array
     {
+        $this->assertRangeBounds('toArray', $start, $end);
         $this->ensureSorted();
-        if ($this->type === self::BITSET) {
-            return \array_keys($this->data);
+        if ($start === null && $end === null) {
+            if ($this->type === self::BITSET) {
+                return \array_keys($this->data);
+            }
+            return $this->data;
         }
-        return $this->data;
+        $keys = $this->rangeKeys($start, $end);
+        if ($this->type === self::BITSET) {
+            return \array_values($keys);
+        }
+        $out = [];
+        foreach ($keys as $k) {
+            $out[$k] = $this->data[$k];
+        }
+        return $out;
     }
 
-    public static function fromArray(int $type, array $data): static
+    /** @param bool $optimizeIteration Accepted and ignored; see __construct(). */
+    public static function fromArray(int $type, array $data, bool $optimizeIteration = false): static
     {
         $judy = new static($type);
         $judy->putAll($data);
@@ -351,19 +408,35 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $result;
     }
 
-    public function keys(): array
+    public function keys(mixed $start = null, mixed $end = null): array
     {
+        $this->assertRangeBounds('keys', $start, $end);
         $this->ensureSorted();
-        return \array_keys($this->data);
-    }
-
-    public function values(): array
-    {
-        $this->ensureSorted();
-        if ($this->type === self::BITSET) {
+        if ($start === null && $end === null) {
             return \array_keys($this->data);
         }
-        return \array_values($this->data);
+        return \array_values($this->rangeKeys($start, $end));
+    }
+
+    public function values(mixed $start = null, mixed $end = null): array
+    {
+        $this->assertRangeBounds('values', $start, $end);
+        $this->ensureSorted();
+        if ($start === null && $end === null) {
+            if ($this->type === self::BITSET) {
+                return \array_keys($this->data);
+            }
+            return \array_values($this->data);
+        }
+        $keys = $this->rangeKeys($start, $end);
+        if ($this->type === self::BITSET) {
+            return \array_values($keys);
+        }
+        $out = [];
+        foreach ($keys as $k) {
+            $out[] = $this->data[$k];
+        }
+        return $out;
     }
 
     public function increment(mixed $key, int $amount = 1): int
@@ -486,7 +559,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         if ($start === 0 && $end === -1) {
             return \count($this->data);
         }
-        return $this->countRange($start, $end);
+        return \count($this->rangeKeys($start, $end));
     }
 
     public function deleteRange(mixed $start, mixed $end): int
@@ -543,16 +616,46 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     private function ensureSorted(): void
     {
-        if (!$this->sorted) {
-            \ksort($this->data, $this->sortFlags());
-            $this->sorted = true;
+        if ($this->sorted) {
+            return;
         }
+        if ($this->intKeyed()) {
+            // Unsigned key order, not PHP's signed numeric order — see cmpKeys().
+            \uksort($this->data, fn(int|string $a, int|string $b): int => self::cmpUnsigned((int) $a, (int) $b));
+        } else {
+            \ksort($this->data, $this->sortFlags());
+        }
+        $this->sorted = true;
+    }
+
+    /**
+     * Compare two integer keys as UNSIGNED machine words, which is what they are.
+     *
+     * A negative PHP int has its high bit set, so it addresses the top of the
+     * key space: -1 is the largest key there is, and PHP_INT_MAX sits just below
+     * the entire negative half. Signed comparison would order -1 first, which is
+     * where the polyfill diverged once the extension started storing negative
+     * offsets as keys (php-judy 2.5.0) instead of discarding them.
+     *
+     * Consequences that fall out of this and are pinned by the parity suite:
+     * keys() puts negatives last, first()/last() follow, and size(0, -1) covers
+     * the whole key space because -1 IS the maximum bound.
+     */
+    private static function cmpUnsigned(int $a, int $b): int
+    {
+        if ($a === $b) {
+            return 0;
+        }
+        if (($a < 0) !== ($b < 0)) {
+            return $a < 0 ? 1 : -1;   // the negative one has the high bit set
+        }
+        return $a < $b ? -1 : 1;
     }
 
     private function cmpKeys(int|string $a, mixed $b): int
     {
         if ($this->intKeyed()) {
-            return (int) $a <=> (int) $b;
+            return self::cmpUnsigned((int) $a, (int) $b);
         }
         return \strcmp((string) $a, (string) $b);
     }
@@ -591,9 +694,34 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return null;
     }
 
-    private function seekEmpty(int $start, bool $forward): mixed
+    /**
+     * The next key upward in UNSIGNED order, or null past the top.
+     *
+     * PHP_INT_MAX (0x7fff…f) is followed by PHP_INT_MIN (0x8000…0), not by a
+     * float: incrementing across that edge is where the scans used to promote to
+     * double and emit "not representable as an int". -1 (0xffff…f) is the last
+     * key there is, so there is nothing after it.
+     */
+    private static function unsignedSucc(int $i): ?int
     {
-        if (!$this->intKeyed()) {
+        if ($i === -1) {
+            return null;
+        }
+        return $i === PHP_INT_MAX ? PHP_INT_MIN : $i + 1;
+    }
+
+    /** The next key downward in unsigned order, or null past the bottom (0). */
+    private static function unsignedPred(int $i): ?int
+    {
+        if ($i === 0) {
+            return null;
+        }
+        return $i === PHP_INT_MIN ? PHP_INT_MAX : $i - 1;
+    }
+
+    private function seekEmpty(?int $start, bool $forward): mixed
+    {
+        if (!$this->intKeyed() || $start === null) {
             return null;
         }
         $i = $start;
@@ -601,22 +729,58 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             if (!\array_key_exists($i, $this->data)) {
                 return $i;
             }
-            $i += $forward ? 1 : -1;
+            $i = $forward ? self::unsignedSucc($i) : self::unsignedPred($i);
+            if ($i === null) {
+                return null;   // ran off the end of the key space
+            }
         }
     }
 
-    private function countRange(mixed $start, mixed $end): int
+    /**
+     * Keys inside the inclusive [$start, $end] range, in stored order.
+     *
+     * One implementation behind size(), populationCount(), keys(), values() and
+     * toArray(), so the five cannot drift apart. null on either side leaves it
+     * unbounded.
+     *
+     * Integer bounds need no special case for negatives: cmpKeys() compares
+     * integer keys as unsigned words, so a bound of -1 is already the maximum
+     * (which is why size(0, -1) means "everything") and keys(-5, 10) is already
+     * empty because the start sits above the end.
+     */
+    /**
+     * String-keyed arrays compare bounds with strcmp(), so the extension rejects
+     * a non-string bound outright rather than coercing it. null is always fine:
+     * it means "unbounded on that side", not "a bound".
+     */
+    private function assertRangeBounds(string $method, mixed $start, mixed $end): void
     {
-        if ($end === -1 && $this->intKeyed()) {
-            $end = PHP_INT_MAX;
+        if ($this->intKeyed()) {
+            return;
         }
-        $count = 0;
-        foreach (\array_keys($this->data) as $k) {
-            if ($this->cmpKeys($k, $start) >= 0 && $this->cmpKeys($k, $end) <= 0) {
-                $count++;
+        foreach ([$start, $end] as $bound) {
+            if ($bound !== null && !\is_string($bound)) {
+                throw new \TypeError(
+                    "Judy::$method() expects string arguments for string-keyed arrays"
+                );
             }
         }
-        return $count;
+    }
+
+    private function rangeKeys(mixed $start, mixed $end): array
+    {
+        $this->ensureSorted();
+        $out = [];
+        foreach (\array_keys($this->data) as $k) {
+            if ($start !== null && $this->cmpKeys($k, $start) < 0) {
+                continue;
+            }
+            if ($end !== null && $this->cmpKeys($k, $end) > 0) {
+                continue;
+            }
+            $out[] = $k;
+        }
+        return $out;
     }
 
     private function assertSameType(Judy|\Judy $other): void
@@ -656,5 +820,37 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     {
         $n = \count($this->data);
         return $n === 0 ? 0 : 40 + 9 * $n;
+    }
+
+    /**
+     * Payload-only estimate for string-keyed types, composed the way the
+     * extension composes its own: the stored key bytes, counted twice for the
+     * _HASH types because those hold each key in both the value store and the
+     * key index, plus one machine word per value slot, plus a zval box for each
+     * _MIXED value. Like the extension's, it excludes container overhead and is
+     * therefore a lower bound.
+     */
+    private function estimateStringBytes(): int
+    {
+        if ($this->data === []) {
+            return 0;
+        }
+
+        $hashed = \in_array($this->type, [
+            self::STRING_TO_INT_HASH,
+            self::STRING_TO_MIXED_HASH,
+        ], true);
+        $mixed = !\in_array($this->type, self::INT_VALUED, true);
+
+        $bytes = 0;
+        foreach (\array_keys($this->data) as $k) {
+            $keyBytes = \strlen((string) $k);
+            $bytes += $hashed ? $keyBytes * 2 : $keyBytes;
+            $bytes += \PHP_INT_SIZE;        // one word per value slot
+            if ($mixed) {
+                $bytes += 16;               // the zval box the extension allocates
+            }
+        }
+        return $bytes;
     }
 }

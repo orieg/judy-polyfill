@@ -20,6 +20,38 @@ if (!extension_loaded('judy')) {
 const NATIVE = \Judy::class;
 const POLY   = \Orieg\JudyPolyfill\Judy::class;
 
+/**
+ * The polyfill targets the newest extension API, but CI installs whatever
+ * version is RELEASED, and this suite has to stay meaningful against both.
+ *
+ * The two are never loaded together at runtime — bootstrap.php only defines the
+ * polyfill when ext-judy is absent — so this is a development check, not a
+ * compatibility shim. Its job is to prove the polyfill matches the extension on
+ * everything that extension actually has. Expectations that need a newer
+ * extension than the one installed are SKIPPED and named, rather than failing:
+ * a red suite that everyone knows to ignore is worse than no suite, and
+ * silently dropping the checks would be worse than either.
+ *
+ * Checks strengthen automatically as soon as CI's extension catches up.
+ */
+define('EXT_VERSION', \judy_version());
+
+function extAtLeast(string $version): bool
+{
+    return \version_compare(EXT_VERSION, $version, '>=');
+}
+
+/** Method => the extension version that gave it its current signature. */
+const SIGNATURE_SINCE = [
+    'keys'                 => '2.5.0',   // range arguments (php-judy#96)
+    'values'               => '2.5.0',
+    'toArray'              => '2.5.0',
+    'size'                 => '2.5.0',   // $index_start/$index_end -> $start/$end
+    '__construct'          => '2.5.0',   // $optimizeIteration
+    'fromArray'            => '2.5.0',
+    'isIterationOptimized' => '2.5.0',
+];
+
 /** Normalize any outcome (value/exception) into a comparable form. */
 function capture(callable $fn): mixed
 {
@@ -51,10 +83,16 @@ function memShape(mixed $v): string
 
 $failures = 0;
 $checks   = 0;
+$skipped  = 0;
 
-function scenario(string $label, callable $steps): void
+function scenario(string $label, callable $steps, ?string $requires = null): void
 {
-    global $failures, $checks;
+    global $failures, $checks, $skipped;
+    if ($requires !== null && !extAtLeast($requires)) {
+        $skipped++;
+        echo "SKIP [$label] needs ext-judy >= $requires, have " . EXT_VERSION . "\n";
+        return;
+    }
     $native = $steps(NATIVE);
     $poly   = $steps(POLY);
     foreach ($native as $step => $expected) {
@@ -66,6 +104,112 @@ function scenario(string $label, callable $steps): void
         }
     }
 }
+
+/* ── Signature parity ────────────────────────────────────────────
+ *
+ * Behaviour parity cannot catch "the method exists but will not accept those
+ * arguments". That gap let the extension add range arguments to keys(), values()
+ * and toArray() (php-judy #96) and an $optimizeIteration flag to __construct()
+ * and fromArray() while this class kept the older signatures — a fatal for any
+ * caller written against the extension, invisible to every scenario below,
+ * because a scenario can only call what both classes already accept.
+ *
+ * A naive comparison is useless here: the polyfill lives in its own namespace,
+ * so it must accept its own class and may return static. Those differences are
+ * correct and permanent, so they are normalized away rather than reported —
+ * otherwise the check cries wolf on ten methods forever and stops being read.
+ * What survives normalization is real drift.
+ */
+function renderSignature(string $class, string $method): string
+{
+    $r = new \ReflectionMethod($class, $method);
+
+    $params = array_map(static function (\ReflectionParameter $p): string {
+        $s = ($p->hasType() ? normalizeType((string) $p->getType()) . ' ' : '') . '$' . $p->getName();
+        if ($p->isDefaultValueAvailable()) {
+            $s .= ' = ' . var_export($p->getDefaultValue(), true);
+        } elseif ($p->isVariadic()) {
+            $s = '...' . $s;
+        }
+        return $s;
+    }, $r->getParameters());
+
+    return ($r->isStatic() ? 'static ' : '')
+        . $method . '(' . implode(', ', $params) . '): '
+        . ($r->hasReturnType() ? normalizeType((string) $r->getReturnType()) : 'mixed');
+}
+
+/** Collapse the self-type spellings the two implementations legitimately differ on. */
+function normalizeType(string $type): string
+{
+    $parts = explode('|', $type);
+    $parts = array_map(static function (string $t): string {
+        $t = ltrim($t, '?\\');
+        // "static" and "Orieg\JudyPolyfill\Judy" both mean "this Judy class".
+        if ($t === 'static' || $t === 'self' || $t === 'Orieg\\JudyPolyfill\\Judy' || $t === 'Judy') {
+            return 'Judy';
+        }
+        return $t;
+    }, $parts);
+    $parts = array_values(array_unique($parts));
+    sort($parts);
+    return (str_starts_with($type, '?') ? '?' : '') . implode('|', $parts);
+}
+
+function signatureParity(): void
+{
+    global $failures, $checks, $skipped;
+
+    $publics = static fn(string $c): array => array_map(
+        static fn(\ReflectionMethod $m): string => $m->getName(),
+        (new \ReflectionClass($c))->getMethods(\ReflectionMethod::IS_PUBLIC)
+    );
+
+    $native = $publics(NATIVE);
+    $poly   = $publics(POLY);
+    sort($native);
+    sort($poly);
+
+    $gate = static function (string $m) use (&$skipped): bool {
+        $since = SIGNATURE_SINCE[$m] ?? null;
+        if ($since !== null && !extAtLeast($since)) {
+            $skipped++;
+            echo "SKIP [signature :: $m] needs ext-judy >= $since, have " . EXT_VERSION . "\n";
+            return false;
+        }
+        return true;
+    };
+
+    foreach (array_diff($native, $poly) as $m) {
+        $checks++;
+        $failures++;
+        echo "DIVERGE [signature :: $m]\n  native:   declared\n  polyfill: «missing»\n";
+    }
+    // A method the polyfill has and this extension does not is only drift if
+    // the extension is new enough to have been expected to declare it.
+    foreach (array_diff($poly, $native) as $m) {
+        if (!$gate($m)) {
+            continue;
+        }
+        $checks++;
+        $failures++;
+        echo "DIVERGE [signature :: $m]\n  native:   «absent»\n  polyfill: declared (extra public method)\n";
+    }
+    foreach (array_intersect($native, $poly) as $m) {
+        if (!$gate($m)) {
+            continue;
+        }
+        $checks++;
+        $a = renderSignature(NATIVE, $m);
+        $b = renderSignature(POLY, $m);
+        if ($a !== $b) {
+            $failures++;
+            echo "DIVERGE [signature :: $m]\n  native:   $a\n  polyfill: $b\n";
+        }
+    }
+}
+
+signatureParity();
 
 $intTypes    = ['BITSET' => 1, 'INT_TO_INT' => 2, 'INT_TO_MIXED' => 3, 'INT_TO_PACKED' => 6];
 $stringTypes = ['STRING_TO_INT' => 4, 'STRING_TO_MIXED' => 5, 'STRING_TO_MIXED_HASH' => 7,
@@ -233,7 +377,15 @@ foreach ($stringTypes as $name => $type) {
         $r['searchNext/prev'] = capture(fn() => [$j->searchNext('aa'), $j->prev('zz'), $j->searchNext('zz')]);
         $r['byCount null'] = capture(fn() => $j->byCount(1));
         $r['empties null'] = capture(fn() => [$j->firstEmpty(), $j->nextEmpty('a'), $j->lastEmpty(), $j->prevEmpty('z')]);
-        $r['memoryUsage null'] = capture(fn() => $j->memoryUsage());
+        // Shape only, as for the integer-keyed types above. The extension's
+        // string-keyed figure is its own payload accounting over JudySL/JudyHS;
+        // an exact match from a PHP array is neither achievable nor meaningful.
+        // What has to agree is that both report an int rather than null — and
+        // only from 2.5.0, which is when the extension gained that accounting
+        // at all; before it, string-keyed memoryUsage() was null by contract.
+        if (extAtLeast('2.5.0')) {
+            $r['memoryUsage shape'] = capture(fn() => memShape($j->memoryUsage()));
+        }
         $r['numeric-string key'] = capture(function () use ($j, $val) {
             $j['123'] = $val('123');
             return [$j->first(), $j['123'], array_key_exists(123, $j->toArray())];
@@ -274,5 +426,249 @@ scenario('string/increment', function (string $class) {
     return $r;
 });
 
-echo "\n$checks checks, $failures divergences\n";
+/* ── Bounded keys()/values()/toArray() ───────────────────────────
+ *
+ * The range arguments the signature check now pins also have to behave the
+ * same. The interesting cases are not the ordinary spans but the edges, and one
+ * of them is easy to get wrong in a PHP reimplementation: the extension casts
+ * integer bounds to Word_t, so -1 is the maximum bound (size(0, -1) means
+ * "everything") and every other negative likewise lands above any representable
+ * key — which makes keys(-5, 10) empty rather than "the low keys".
+ */
+scenario('range/int', function (string $class) {
+    $r = [];
+    foreach ([1 => 'BITSET', 2 => 'INT_TO_INT', 3 => 'INT_TO_MIXED', 6 => 'INT_TO_PACKED'] as $type => $name) {
+        $j = new $class($type);
+        foreach ([1, 5, 10, 15, 1000] as $i) {
+            $j[$i] = $type === 1 ? true : ($type === 2 ? $i * 10 : "v$i");
+        }
+        foreach ([
+            'span'            => [5, 15],
+            'single'          => [5, 5],
+            'in a gap'        => [6, 9],
+            'past the end'    => [2000, 3000],
+            'inverted'        => [15, 5],
+            'unbounded end'   => [10, null],
+            'unbounded start' => [null, 10],
+            'both unbounded'  => [null, null],
+            'minus one end'   => [0, -1],
+            'negative start'  => [-5, 10],
+        ] as $label => [$lo, $hi]) {
+            $r["$name $label"] = capture(fn() => [
+                $j->keys($lo, $hi),
+                $j->values($lo, $hi),
+                $j->toArray($lo, $hi),
+            ]);
+        }
+        $r["$name size/populationCount"] = capture(fn() => [
+            $j->size(5, 15), $j->populationCount(5, 15),
+            $j->size(0, -1), $j->populationCount(0, -1),
+        ]);
+    }
+    return $r;
+}, requires: '2.5.0');
+
+scenario('range/string', function (string $class) {
+    $r = [];
+    foreach ([4 => 'STRING_TO_INT', 5 => 'STRING_TO_MIXED', 7 => 'STRING_TO_MIXED_HASH',
+              8 => 'STRING_TO_INT_HASH', 9 => 'STRING_TO_MIXED_ADAPTIVE',
+              10 => 'STRING_TO_INT_ADAPTIVE'] as $type => $name) {
+        $j = new $class($type);
+        $intValued = \in_array($type, [4, 8, 10], true);
+        foreach (['aa', 'apple', 'apricot_long', 'banana', 'blackcurrant', 'cherry', 'zz'] as $i => $k) {
+            $j[$k] = $intValued ? $i : "v$i";
+        }
+        foreach ([
+            'span'            => ['b', 'c'],
+            'bounds are keys' => ['apple', 'cherry'],
+            'single'          => ['aa', 'aa'],
+            'prefix is not a prefix match' => ['bb', 'bl'],
+            'prefix successor' => ['bb', 'bm'],
+            'inverted'        => ['c', 'b'],
+            'past the end'    => ['zzz', 'zzzz'],
+            'unbounded end'   => ['b', null],
+            'unbounded start' => [null, 'b'],
+            'both unbounded'  => [null, null],
+        ] as $label => [$lo, $hi]) {
+            $r["$name $label"] = capture(fn() => [
+                $j->keys($lo, $hi),
+                $j->values($lo, $hi),
+                $j->toArray($lo, $hi),
+            ]);
+        }
+        // A bounded read must equal the same range copied and read whole.
+        $r["$name matches slice"] = capture(fn() => [
+            $j->keys('b', 'c') === $j->slice('b', 'c')->keys(),
+            $j->toArray('b', 'c') === $j->slice('b', 'c')->toArray(),
+        ]);
+        // Non-string bounds are a TypeError on string-keyed arrays.
+        $r["$name rejects int bounds"] = capture(fn() => $j->keys(1, 2));
+
+        /* size() on string keys is the behaviour change 2.5.0 actually shipped:
+         * before it, string bounds were accepted, ignored, and the whole-array
+         * count came back. Covering only keys()/values()/toArray() above would
+         * leave that regression free to come back unnoticed, so size() is
+         * pinned against the same ranges — and against count(), which must stay
+         * the unbounded answer. */
+        $r["$name size bounded"] = capture(fn() => [
+            $j->size('b', 'c'),
+            $j->size('apple', 'cherry'),
+            $j->size('aa', 'aa'),
+            $j->size('bb', 'bl'),
+            $j->size('c', 'b'),          // inverted: empty
+            $j->size('zzz', 'zzzz'),     // past the end: empty
+            $j->size('b', null),
+            $j->size(null, 'b'),
+        ]);
+        $r["$name size unbounded equals count"] = capture(fn() => [
+            $j->size(), $j->count(), $j->size() === $j->count(),
+        ]);
+        // A bounded size() must agree with the keys() it is counting.
+        $r["$name size agrees with keys"] = capture(fn() => [
+            $j->size('b', 'c') === \count($j->keys('b', 'c')),
+            $j->size(null, 'b') === \count($j->keys(null, 'b')),
+        ]);
+        $r["$name size rejects int bounds"] = capture(fn() => $j->size(1, 2));
+    }
+    return $r;
+}, requires: '2.5.0');
+
+/* populationCount() stays integer-keyed only, bounds or no bounds.
+ *
+ * size() and populationCount() look interchangeable and are not: the second is
+ * specifically a read of libJudy's population cache, and JudySL/JudyHS have no
+ * such cache, so there is nothing for it to read. size() is expected to gain
+ * string bounds (php-judy#105); populationCount() is deliberately not.
+ *
+ * Worth pinning here because the polyfill routes size(), keys(), values() and
+ * toArray() through one shared range helper, and it would be an easy accident
+ * to let populationCount() reach it too and start answering where the extension
+ * throws. */
+scenario('populationCount stays integer-keyed', function (string $class) {
+    $r = [];
+    foreach ([4 => 'STRING_TO_INT', 5 => 'STRING_TO_MIXED', 7 => 'STRING_TO_MIXED_HASH',
+              8 => 'STRING_TO_INT_HASH', 9 => 'STRING_TO_MIXED_ADAPTIVE',
+              10 => 'STRING_TO_INT_ADAPTIVE'] as $type => $name) {
+        $j = new $class($type);
+        $j['aa'] = 1;
+        $j['bb'] = 2;
+        $r["$name bounded"] = capture(fn() => $j->populationCount('a', 'c'));
+        $r["$name unbounded"] = capture(fn() => $j->populationCount());
+    }
+    return $r;
+});
+
+/* ── Negative integer keys (ext-judy 2.5.0) ──────────────────────
+ *
+ * Integer keys are unsigned machine words, so a negative PHP int addresses the
+ * TOP of the key space: -1 is the largest key there is, and the whole negative
+ * half sorts above PHP_INT_MAX. Before 2.5.0 the extension discarded negative
+ * offsets and appended instead, so this was unreachable and the divergence here
+ * was invisible — a PHP array orders those keys signed, putting -1 first.
+ *
+ * Everything below follows from the ordering: keys()/toArray() order,
+ * first()/last(), the empty-slot scans, and the range bounds. -1 as an upper
+ * bound is the maximum, which is exactly why size(0, -1) means "everything".
+ */
+scenario('negative keys', function (string $class) {
+    $r = [];
+    foreach ([1 => 'BITSET', 2 => 'INT_TO_INT', 3 => 'INT_TO_MIXED', 6 => 'INT_TO_PACKED'] as $type => $name) {
+        $val = fn(int $i) => $type === 1 ? true : ($type === 2 ? $i : "v$i");
+
+        $r["$name round trip"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            $j[-1] = $val(1);
+            $j[PHP_INT_MIN] = $val(2);
+            return [$j->count(), isset($j[-1]), $j[-1], isset($j[0]), $j[PHP_INT_MIN]];
+        });
+
+        $r["$name unsigned order"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([5, 1, -1, -2, PHP_INT_MAX, PHP_INT_MIN, 0] as $k) {
+                $j[$k] = $val($k);
+            }
+            return [$j->keys(), $j->toArray(), $j->values()];
+        });
+
+        $r["$name first/last/nav"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([5, -1, -2, 0] as $k) {
+                $j[$k] = $val($k);
+            }
+            return [$j->first(), $j->last(), $j->searchNext(5), $j->prev(-1), $j->byCount(1), $j->byCount(4)];
+        });
+
+        $r["$name ranges"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([5, 1, -1, -2, PHP_INT_MAX] as $k) {
+                $j[$k] = $val($k);
+            }
+            return [
+                $j->keys(0, -1),        // 0 .. unsigned max: everything
+                $j->keys(-2, -1),       // just the negative pair
+                $j->keys(0, 100),       // excludes the negatives
+                $j->keys(-1, -1),
+                $j->keys(-5, 10),       // start above end: empty
+                $j->size(0, -1),
+                $j->populationCount(0, -1),
+                $j->populationCount(-2, -1),
+            ];
+        });
+
+        $r["$name iteration order"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([3, -1, 0] as $k) {
+                $j[$k] = $val($k);
+            }
+            $out = [];
+            foreach ($j as $k => $v) {
+                $out[] = $k;
+            }
+            return $out;
+        });
+
+        $r["$name deleteRange/slice"] = capture(function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach ([5, 1, -1, -2] as $k) {
+                $j[$k] = $val($k);
+            }
+            $sliced = $j->slice(-2, -1)->keys();
+            $deleted = $j->deleteRange(-2, -1);
+            return [$sliced, $deleted, $j->keys()];
+        });
+    }
+
+    // Empty-slot scans are unsigned too: the first absent key at or above -2.
+    $r['empties around the top'] = capture(function () use ($class) {
+        $j = new $class(2);
+        $j[-1] = 1;
+        $j[-3] = 3;
+        return [$j->firstEmpty(-3), $j->nextEmpty(-3), $j->lastEmpty(), $j->prevEmpty(-1)];
+    });
+
+    return $r;
+}, requires: '2.5.0');
+
+/* The flag the extension added alongside: accepted everywhere, honoured only
+   natively, and isIterationOptimized() is what makes the difference visible. */
+scenario('optimizeIteration accepted', function (string $class) {
+    $r = [];
+    foreach ([2 => 'INT_TO_INT', 4 => 'STRING_TO_INT', 8 => 'STRING_TO_INT_HASH'] as $type => $name) {
+        $r["$name constructs with flag"] = capture(function () use ($class, $type) {
+            $j = new $class($type, true);
+            $j[$type === 2 ? 5 : 'aa'] = 1;
+            return [$j->count(), is_bool($j->isIterationOptimized())];
+        });
+        $r["$name fromArray with flag"] = capture(function () use ($class, $type) {
+            $data = $type === 2 ? [1 => 10, 2 => 20] : ['aa' => 1, 'bb' => 2];
+            $j = $class::fromArray($type, $data, true);
+            return [$j->toArray(), is_bool($j->isIterationOptimized())];
+        });
+    }
+    return $r;
+}, requires: '2.5.0');
+
+printf("\next-judy %s: %d checks, %d divergences%s\n",
+    EXT_VERSION, $checks, $failures,
+    $skipped > 0 ? ", $skipped skipped (need a newer extension)" : '');
 exit($failures === 0 ? 0 : 1);
