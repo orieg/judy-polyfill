@@ -29,6 +29,22 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     private const INT_VALUED = [self::INT_TO_INT, self::STRING_TO_INT, self::STRING_TO_INT_HASH, self::STRING_TO_INT_ADAPTIVE];
     private const INCREMENTABLE = [self::INT_TO_INT, self::STRING_TO_INT, self::STRING_TO_INT_HASH];
 
+    /**
+     * How each string-keyed type names itself in the embedded-NUL rejection.
+     *
+     * The two adaptive types deliberately share one wording — the extension
+     * raises theirs from the shared adaptive layer, which does not know which
+     * of the two it is standing in for. See assertKeyBytes().
+     */
+    private const NUL_SUBJECT = [
+        self::STRING_TO_INT          => 'STRING_TO_INT',
+        self::STRING_TO_MIXED        => 'STRING_TO_MIXED',
+        self::STRING_TO_MIXED_HASH   => 'STRING_TO_MIXED_HASH',
+        self::STRING_TO_INT_HASH     => 'STRING_TO_INT_HASH',
+        self::STRING_TO_MIXED_ADAPTIVE => 'adaptive',
+        self::STRING_TO_INT_ADAPTIVE   => 'adaptive',
+    ];
+
     private int $type;
     /** @var array<int|string, mixed> For BITSET: set indices stored as $data[$index] = true. */
     private array $data = [];
@@ -271,6 +287,11 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     public function slice(mixed $start, mixed $end): static
     {
+        // slice() checks the bytes of both bounds before it minds their types,
+        // the opposite order from keys()/values()/toArray()/size(); slice(1, "a\0b")
+        // is the NUL-byte Exception natively, not a bound-type complaint.
+        $this->assertBoundBytes($start);
+        $this->assertBoundBytes($end);
         $result = new static($this->type);
         $this->ensureSorted();
         foreach ($this->data as $k => $v) {
@@ -295,18 +316,33 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     /* ── ArrayAccess ──────────────────────────────────────────── */
 
+    /**
+     * The three read/delete offset handlers answer an EMPTY array before they
+     * look at the offset at all, so a key the array could never hold — an
+     * embedded NUL — reads back as absent rather than throwing. That is the
+     * extension's own ordering: its guard sits behind the null-array short
+     * circuit, and it holds however the array became empty (never written,
+     * unset, deleteRange()d or free()d). offsetSet() has no such path: it must
+     * take the key to store it, so it always throws.
+     */
     public function offsetExists(mixed $offset): bool
     {
+        if ($this->data === []) {
+            return false;
+        }
         return \array_key_exists($this->coerceKey($offset), $this->data);
     }
 
     public function offsetGet(mixed $offset): mixed
     {
+        if ($this->data === []) {
+            // Native quirk: BITSET reads of absent bits return false, but an
+            // empty bitset returns null.
+            return null;
+        }
         $key = $this->coerceKey($offset);
         if (!\array_key_exists($key, $this->data)) {
-            // Native quirk: BITSET reads of absent bits return false unless
-            // the whole bitset is empty, which returns null.
-            return $this->type === self::BITSET && \count($this->data) > 0 ? false : null;
+            return $this->type === self::BITSET ? false : null;
         }
         return $this->type === self::BITSET ? true : $this->data[$key];
     }
@@ -329,6 +365,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     public function offsetUnset(mixed $offset): void
     {
+        if ($this->data === []) {
+            return;
+        }
         unset($this->data[$this->coerceKey($offset)]);
     }
 
@@ -570,6 +609,8 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     public function deleteRange(mixed $start, mixed $end): int
     {
+        $this->assertBoundBytes($start);
+        $this->assertBoundBytes($end);
         $deleted = 0;
         foreach (\array_keys($this->data) as $k) {
             if ($this->cmpKeys($k, $start) >= 0 && $this->cmpKeys($k, $end) <= 0) {
@@ -604,7 +645,55 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         if ($this->intKeyed()) {
             return (int) $offset;
         }
-        return (string) $offset;
+        $key = (string) $offset;
+        $this->assertKeyBytes($key);
+        return $key;
+    }
+
+    /**
+     * String keys must not contain 0x00.
+     *
+     * A PHP array is binary-safe and would happily store "ab\0cd" as a key
+     * distinct from "ab", so this rejection exists only because the extension
+     * cannot: JudySL indexes NUL-TERMINATED C strings by construction, and the
+     * hash and adaptive types share the ordered trie for every seek and range.
+     * Accepting the key here would be the more "correct" data structure and the
+     * wrong polyfill — code that works against this class has to work against
+     * the extension, so the extension defines the contract.
+     *
+     * php-judy rejects from 2.5.1 (issue #117 / PR #119). Before that the trie
+     * types truncated at the NUL, silently collapsing two distinct keys into
+     * one and destroying a value, and the hash/adaptive types guarded only
+     * writes while every ordered read still truncated — so there is no earlier
+     * behaviour worth being bug-compatible with.
+     *
+     * Position is irrelevant: leading, trailing and interior NULs are all
+     * rejected, and so is a key that is nothing but a NUL. The empty string is
+     * a perfectly good key. Only 0x00 is special — every other byte, 0x80-0xFF
+     * included, is stored and compared as-is, which the parity suite pins
+     * because unsigned byte order is what prefix-successor bounds are built on.
+     */
+    private function assertKeyBytes(string $key): void
+    {
+        if (!\str_contains($key, "\0")) {
+            return;
+        }
+        throw new \Exception(sprintf(
+            'Judy %s keys must not contain embedded null bytes',
+            self::NUL_SUBJECT[$this->type]
+        ));
+    }
+
+    /**
+     * The same rejection for a range bound, which — unlike an offset — may
+     * legitimately be null (unbounded) or a non-string the caller's method is
+     * about to reject on its own terms.
+     */
+    private function assertBoundBytes(mixed $bound): void
+    {
+        if (!$this->intKeyed() && \is_string($bound)) {
+            $this->assertKeyBytes($bound);
+        }
     }
 
     private function coerceValue(mixed $value): mixed
@@ -674,6 +763,10 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     private function seek(mixed $index, bool $inclusive, bool $forward): mixed
     {
+        // Ahead of the empty-array exit, unlike the offset handlers: a seek
+        // from an unrepresentable key throws even when there is nothing to
+        // find. Only offsetGet()/offsetExists()/offsetUnset() short circuit.
+        $this->assertBoundBytes($index);
         if (\count($this->data) === 0) {
             return null;
         }
@@ -764,12 +857,19 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         if ($this->intKeyed()) {
             return;
         }
+        // Two passes, not one: the extension rejects a non-string bound on
+        // EITHER side before it inspects the bytes of either, so keys("a\0b", 1)
+        // is the TypeError and not the NUL-byte Exception. An interleaved loop
+        // would report the second problem first.
         foreach ([$start, $end] as $bound) {
             if ($bound !== null && !\is_string($bound)) {
                 throw new \TypeError(
                     "Judy::$method() expects string arguments for string-keyed arrays"
                 );
             }
+        }
+        foreach ([$start, $end] as $bound) {
+            $this->assertBoundBytes($bound);
         }
     }
 

@@ -476,6 +476,286 @@ scenario('string/numeric-key types', function (string $class) {
     return $r;
 });
 
+/** The six string-keyed types, in one place: three scenarios below want them. */
+const STRING_KEYED = [
+    4  => 'STRING_TO_INT',
+    5  => 'STRING_TO_MIXED',
+    7  => 'STRING_TO_MIXED_HASH',
+    8  => 'STRING_TO_INT_HASH',
+    9  => 'STRING_TO_MIXED_ADAPTIVE',
+    10 => 'STRING_TO_INT_ADAPTIVE',
+];
+
+/** Hex-render anything key-shaped, so binary keys survive the diff printer. */
+function hex(mixed $v): mixed
+{
+    if (is_array($v)) {
+        return array_map('hex', $v);
+    }
+    return is_string($v) ? bin2hex($v) : $v;
+}
+
+/** Hex-render an array's KEYS (the values are already printable). */
+function hexKeys(array $a): array
+{
+    return array_map('hex', array_keys($a));
+}
+
+/* ── Embedded NUL bytes in string keys (ext-judy 2.5.1) ──────────
+ *
+ * A PHP array is binary-safe, so the polyfill would happily store "ab\0cd" as
+ * a key distinct from "ab". The extension cannot: JudySL indexes NUL-TERMINATED
+ * C strings by construction, and the hash and adaptive types share that trie
+ * for every seek and range. So 2.5.1 rejects the key outright (php-judy #117 /
+ * PR #119), where before it the trie types truncated at the NUL — collapsing
+ * two distinct keys into one and destroying a value — and the hash/adaptive
+ * types guarded only writes while every ordered read still truncated.
+ *
+ * The polyfill has to throw to match. It is the less "correct" data structure
+ * and the only correct polyfill: code written against this class has to run
+ * against the extension.
+ *
+ * This scenario exists because the suite had NO \x00 in it anywhere, and was
+ * green through the whole divergence. That is the fourth key-space bug in this
+ * ecosystem to hide behind a corpus of only realistic keys, so the checks below
+ * are deliberately exhaustive rather than representative: every method that
+ * takes a key or a bound, on every string-keyed type, plus the orderings where
+ * the guard does NOT fire.
+ */
+scenario('string/embedded-NUL keys', function (string $class) {
+    $nul = "ab\x00cd";
+    $r = [];
+
+    foreach (STRING_KEYED as $type => $name) {
+        $intValued = in_array($type, [4, 8, 10], true);
+        $val = fn(string $k) => $intValued ? strlen($k) : "v:$k";
+        /* A fresh populated array per check: many of these mutate, and the
+           partial-application ones have to start from a known state. */
+        $mk = function () use ($class, $type, $val) {
+            $j = new $class($type);
+            foreach (['aa', 'mm', 'zz'] as $k) {
+                $j[$k] = $val($k);
+            }
+            return $j;
+        };
+        $empty = fn() => new $class($type);
+
+        /* Writes. The message names the type — except on the two adaptive
+           types, which share one wording because the extension raises theirs
+           from the shared adaptive layer. That asymmetry is the point of
+           comparing messages rather than just "did it throw". */
+        $r["$name offsetSet"] = capture(function () use ($mk, $nul, $val) {
+            $j = $mk();
+            $j[$nul] = $val($nul);
+            return $j->count();
+        });
+        $r["$name increment"] = capture(fn() => $mk()->increment($nul));
+        $r["$name fromArray"] = capture(fn() => $class::fromArray($type, [$nul => 1])->count());
+        /* putAll applies entries until it hits the bad key and then throws, so
+           the surviving keys are part of the contract, not just the message. */
+        $r["$name putAll partial"] = capture(function () use ($mk, $nul, $val) {
+            $j = $mk();
+            try {
+                $j->putAll(['ok' => $val('ok'), $nul => $val('x'), 'later' => $val('later')]);
+            } catch (\Throwable $e) {
+                return [str_replace('Orieg\\JudyPolyfill\\Judy', 'Judy', $e->getMessage()), $j->keys()];
+            }
+            return ['no throw', $j->keys()];
+        });
+
+        /* Reads and deletes on a POPULATED array. */
+        $r["$name offsetGet"] = capture(fn() => $mk()[$nul]);
+        $r["$name offsetExists"] = capture(fn() => isset($mk()[$nul]));
+        $r["$name offsetUnset"] = capture(function () use ($mk, $nul) {
+            $j = $mk();
+            unset($j[$nul]);
+            return $j->count();
+        });
+        $r["$name getAll"] = capture(fn() => $mk()->getAll(['aa', $nul]));
+
+        /* The one place the guard does NOT fire: the three read/delete offset
+           handlers answer an EMPTY array before they look at the offset. It
+           holds however the array became empty, so all three routes are pinned
+           — a polyfill that put the check in its key-coercion helper and left
+           it there would throw here, and that is exactly the shape of mistake
+           this scenario is for. */
+        $r["$name offsetGet on empty"] = capture(fn() => $empty()[$nul]);
+        $r["$name offsetExists on empty"] = capture(fn() => isset($empty()[$nul]));
+        $r["$name offsetUnset on empty"] = capture(function () use ($empty, $nul) {
+            $j = $empty();
+            unset($j[$nul]);
+            return $j->count();
+        });
+        $r["$name offsetGet on emptied"] = capture(function () use ($mk, $nul) {
+            $j = $mk();
+            $j->deleteRange('a', 'zzz');
+            return [$j->count(), $j[$nul]];
+        });
+        $r["$name offsetGet after free"] = capture(function () use ($mk, $nul) {
+            $j = $mk();
+            $j->free();
+            return $j[$nul];
+        });
+        /* Seeks do NOT get that reprieve: they throw even with nothing to find. */
+        $r["$name first on empty"] = capture(fn() => $empty()->first($nul));
+        $r["$name keys on empty"] = capture(fn() => $empty()->keys($nul, null));
+
+        /* Navigation. */
+        $r["$name first"] = capture(fn() => $mk()->first($nul));
+        $r["$name last"] = capture(fn() => $mk()->last($nul));
+        $r["$name searchNext"] = capture(fn() => $mk()->searchNext($nul));
+        $r["$name prev"] = capture(fn() => $mk()->prev($nul));
+
+        /* Every bounded read, on BOTH bounds — the pre-2.5.1 extension guarded
+           writes and let the ordered reads truncate, so "the write path throws"
+           is not enough to call this fixed. */
+        foreach ([
+            'keys'        => fn($j, $lo, $hi) => hex($j->keys($lo, $hi)),
+            'values'      => fn($j, $lo, $hi) => $j->values($lo, $hi),
+            'toArray'     => fn($j, $lo, $hi) => hexKeys($j->toArray($lo, $hi)),
+            'size'        => fn($j, $lo, $hi) => $j->size($lo, $hi),
+            'slice'       => fn($j, $lo, $hi) => hex($j->slice($lo, $hi)->keys()),
+            'deleteRange' => fn($j, $lo, $hi) => $j->deleteRange($lo, $hi),
+        ] as $method => $call) {
+            $r["$name $method start"] = capture(fn() => $call($mk(), $nul, 'zz'));
+            $r["$name $method end"] = capture(fn() => $call($mk(), 'aa', $nul));
+        }
+
+        /* Position is irrelevant — "embedded" is the extension's wording, not
+           its rule. A key that is nothing but a NUL is rejected too. */
+        foreach (['leading' => "\x00ab", 'trailing' => "ab\x00", 'only' => "\x00",
+                  'double' => "a\x00b\x00c"] as $where => $key) {
+            $r["$name NUL $where"] = capture(function () use ($mk, $key, $val) {
+                $j = $mk();
+                $j[$key] = $val('x');
+                return $j->count();
+            });
+        }
+        /* The empty string is NOT a NUL and remains a perfectly good key. */
+        $r["$name empty string key"] = capture(function () use ($mk, $val) {
+            $j = $mk();
+            $j[''] = $val('');
+            return [$j->count(), hex($j->keys()), $j[''], isset($j[''])];
+        });
+        /* Only the KEY is constrained. Values stay binary-safe. */
+        $r["$name NUL in value"] = capture(function () use ($mk, $type) {
+            if (in_array($type, [4, 8, 10], true)) {
+                return 'int-valued';   // nothing to store a NUL in
+            }
+            $j = $mk();
+            $j['k'] = "v\x00w";
+            return hex($j['k']);
+        });
+    }
+
+    /* Which complaint wins when a call is wrong twice over. The bounded reads
+       reject a non-string bound on EITHER side before inspecting the bytes of
+       either; slice() checks the bytes of both bounds first. Opposite orders,
+       both pinned, because a shared helper would quietly unify them. */
+    $j = new $class(5);
+    $j['aa'] = 'v';
+    $r['keys(NUL, int) is the TypeError'] = capture(fn() => $j->keys($nul, 1));
+    $r['keys(int, NUL) is the TypeError'] = capture(fn() => $j->keys(1, $nul));
+    $r['size(NUL, int) is the TypeError'] = capture(fn() => $j->size($nul, 1));
+    $r['slice(int, NUL) is the Exception'] = capture(fn() => $j->slice(1, $nul));
+    $r['slice(NUL, int) is the Exception'] = capture(fn() => $j->slice($nul, 1));
+
+    /* Integer-keyed types are untouched: the offset is cast to an int, so the
+       bytes after the cast are nobody's business. */
+    foreach ([1 => 'BITSET', 2 => 'INT_TO_INT', 3 => 'INT_TO_MIXED', 6 => 'INT_TO_PACKED'] as $type => $name) {
+        $r["int/$name ignores NUL"] = capture(function () use ($class, $type, $nul) {
+            $k = new $class($type);
+            $k[$nul] = $type === 1 ? true : 1;
+            return [$k->count(), $k->keys()];
+        });
+    }
+
+    return $r;
+}, requires: '2.5.1');
+
+/* ── High bytes in string keys ───────────────────────────────────
+ *
+ * The other half of the same corpus gap, and the half that must NOT change:
+ * 0x00 is the only byte the extension rejects. Everything from 0x01 to 0xFF is
+ * stored, compared and ordered as an UNSIGNED byte — which is load-bearing,
+ * because prefix-successor range bounds ("ab" .. "ac") are carry arithmetic
+ * over exactly those bytes, and 0xFF is where the carry happens.
+ *
+ * A signed-char comparison anywhere on either side would put 0x80-0xFF below
+ * 0x7F and pass every test written with fruit-shaped keys. This scenario is
+ * expected to be green BEFORE and AFTER the NUL change: it is the negative
+ * control on the rejection, proving it was aimed at one byte and not at
+ * "non-ASCII keys".
+ */
+scenario('string/high-byte keys', function (string $class) {
+    $r = [];
+    $corpus = ["\x01", "\x7f", "\x80", "\xc3\xa9", "\xfe", "\xff", "a\xffb", "ab\xff", "ac", "\xff\xff"];
+
+    foreach (STRING_KEYED as $type => $name) {
+        $intValued = in_array($type, [4, 8, 10], true);
+        $mk = function () use ($class, $type, $corpus, $intValued) {
+            $j = new $class($type);
+            foreach ($corpus as $i => $k) {
+                $j[$k] = $intValued ? $i : "v$i";
+            }
+            return $j;
+        };
+
+        $r["$name stores and orders"] = capture(fn() => [
+            $mk()->count(), hex($mk()->keys()), $mk()->values(),
+        ]);
+        $r["$name round-trips every key"] = capture(function () use ($mk, $corpus) {
+            $j = $mk();
+            $out = [];
+            foreach ($corpus as $k) {
+                $out[] = [bin2hex($k), isset($j[$k]), $j[$k]];
+            }
+            return $out;
+        });
+        $r["$name iterate"] = capture(function () use ($mk) {
+            $out = [];
+            foreach ($mk() as $k => $v) {
+                $out[] = [bin2hex($k), $v];
+            }
+            return $out;
+        });
+        /* 0x80 sorts ABOVE 0x7f, not below it — the signed-char trap. */
+        $r["$name unsigned nav"] = capture(fn() => hex([
+            $mk()->first(), $mk()->last(),
+            $mk()->first("\x80"), $mk()->last("\x80"),
+            $mk()->searchNext("\x7f"), $mk()->prev("\xff"),
+        ]));
+        $r["$name high-byte ranges"] = capture(fn() => [
+            hex($mk()->keys("\x80", "\xff")),
+            hex($mk()->keys("\x01", "\x7f")),
+            $mk()->values("\x80", "\xff"),
+            hexKeys($mk()->toArray("\x80", "\xff")),
+            $mk()->size("\x80", "\xff"),
+            $mk()->size("\x01", "\x7f"),
+        ]);
+        /* Prefix-successor carry: everything under the prefix "ab" is
+           [ab, ab\xff...] and stops before "ac". */
+        $r["$name prefix successor"] = capture(fn() => [
+            hex($mk()->keys('ab', "ab\xff")),
+            hex($mk()->keys('ab', 'ac')),
+            hex($mk()->slice('a', "a\xff")->keys()),
+            $mk()->size('ab', 'ac'),
+        ]);
+        $r["$name unset high byte"] = capture(function () use ($mk) {
+            $j = $mk();
+            unset($j["\xff"]);
+            return [$j->count(), isset($j["\xff"]), isset($j["\xff\xff"])];
+        });
+        $r["$name deleteRange high bytes"] = capture(function () use ($mk) {
+            $j = $mk();
+            $n = $j->deleteRange("\x80", "\xfe");
+            return [$n, hex($j->keys())];
+        });
+        $r["$name getAll"] = capture(fn() => hexKeys($mk()->getAll(["\xff", "a\xffb", "\xfd absent"])));
+    }
+    return $r;
+});
+
 /* ── Bounded keys()/values()/toArray() ───────────────────────────
  *
  * The range arguments the signature check now pins also have to behave the
