@@ -45,7 +45,7 @@ by a native PHP array:
 - ✅ All 10 Judy type constants, full method surface of ext-judy 2.5
 - ✅ Same coercion, ordering, exception, and edge-case semantics — verified
   by a [parity suite](tests/parity.php) that runs every covered scenario
-  against both implementations in CI (1471 checks)
+  against both implementations in CI (1501 checks)
 - ✅ **Signature** parity too, not just behavior: the suite reflects over both
   classes and diffs every public method's parameters, defaults and return type.
   Behavior parity alone cannot catch "the method exists but will not accept
@@ -115,7 +115,11 @@ php -d extension=judy tests/parity.php      # diff every scenario vs native
 ```
 
 CI runs both legs on PHP 8.1–8.5, with the extension installed via
-[PIE](https://github.com/php/pie).
+[PIE](https://github.com/php/pie), and a third leg that builds ext-judy 2.4.2
+and 2.5.0 from source. PIE installs the *latest released* extension, so without
+that leg the version gates below are never exercised — and a scenario that
+calls a method with arguments an older extension cannot accept looks green
+until someone runs an old build by hand.
 
 The parity suite is **version-aware**, because PIE installs the latest
 *released* extension while this package tracks the latest extension *API*, and
@@ -125,9 +129,10 @@ version it wants:
 
 ```
 SKIP [string/embedded-NUL keys] needs ext-judy >= 2.5.1, have 2.5.0
-ext-judy 2.4.2: 984 checks, 0 divergences, 11 skipped (need a newer extension)
-ext-judy 2.5.0: 1240 checks, 0 divergences, 1 skipped (need a newer extension)
-ext-judy 2.5.1: 1471 checks, 0 divergences
+SKIP [string/high-byte keys, bounded] needs ext-judy >= 2.5.0, have 2.4.2
+ext-judy 2.4.2: 999 checks, 0 divergences, 15 skipped (need a newer extension)
+ext-judy 2.5.0: 1270 checks, 0 divergences, 1 skipped (need a newer extension)
+ext-judy 2.5.2: 1501 checks, 0 divergences
 ```
 
 Nothing is silently dropped, and the suite strengthens on its own the moment
