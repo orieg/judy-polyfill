@@ -412,10 +412,16 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     {
         $this->assertRangeBounds('keys', $start, $end);
         $this->ensureSorted();
-        if ($start === null && $end === null) {
-            return \array_keys($this->data);
-        }
-        return \array_values($this->rangeKeys($start, $end));
+        $keys = ($start === null && $end === null)
+            ? \array_keys($this->data)
+            : \array_values($this->rangeKeys($start, $end));
+
+        /* Rows live in a PHP array, whose keys coerce canonical decimal
+           strings to int — so the key "42" comes back from array_keys() as
+           int(42). The native extension builds its list with
+           add_next_index_string() and returns "42". Normalise through
+           keyOut(), the same way key()/first()/searchNext() already do. */
+        return \array_map([$this, 'keyOut'], $keys);
     }
 
     public function values(mixed $start = null, mixed $end = null): array
