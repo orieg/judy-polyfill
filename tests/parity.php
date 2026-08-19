@@ -1345,6 +1345,72 @@ scenario('optimizeIteration accepted', function (string $class) {
     return $r;
 }, requires: '2.5.0');
 
+/* ── The two conformance fixes in ext-judy 2.6.0 ─────────────────
+ *
+ * 2.6.0 shipped no new API, but it did make the extension conform to two
+ * contracts its own stub had always declared — and in both cases the
+ * behaviour it moved to is the one the polyfill already had. These are the
+ * only observable-behaviour changes between 2.5.2 and 2.6.0, so they are
+ * gated: against an older extension the polyfill is *correct* and the
+ * extension diverges, which is not a polyfill defect to fail on.
+ *
+ *   1. offsetSet()/offsetUnset() called as methods returned a bool, though
+ *      Judy.stub.php declares both void (php-judy 3b35162). The bool was not
+ *      merely undeclared but wrong: it reported the helper's SUCCESS/FAILURE,
+ *      which tracks whether the backing array was allocated yet, not whether
+ *      anything was unset. The $j[$k] = $v and unset($j[$k]) operator paths
+ *      always discarded it, so only the explicit method calls were affected.
+ *
+ *   2. Judy::__construct() ran zpp only when given arguments, so `new Judy()`
+ *      silently produced a type-0 object instead of raising for the required
+ *      $type its arginfo has always declared (php-judy 1f14974).
+ */
+scenario('2.6.0 conformance: void offsets, required $type', function (string $class) {
+    $r = [];
+
+    /* All ten types, across every branch the unset helper distinguishes:
+       an unallocated array, an absent key, and a present one. */
+    foreach ([1 => 'BITSET', 2 => 'INT_TO_INT', 3 => 'INT_TO_MIXED', 4 => 'STRING_TO_INT',
+              5 => 'STRING_TO_MIXED', 6 => 'STRING_TO_INT_HASH', 7 => 'STRING_TO_MIXED_HASH',
+              8 => 'STRING_TO_INT_ADAPTIVE', 9 => 'STRING_TO_MIXED_ADAPTIVE'] as $type => $name) {
+        $intKeyed = $type <= 3;
+        $r["$name offset methods return null"] = capture(function () use ($class, $type, $intKeyed) {
+            $key = $intKeyed ? 7 : 'kk';
+            $fresh = new $class($type);
+            $onUnallocated = $fresh->offsetUnset($key);      // nothing allocated yet
+            $j = new $class($type);
+            $set = $j->offsetSet($key, $type === 1 ? true : 1);
+            $overwrite = $j->offsetSet($key, $type === 1 ? true : 2);
+            $onAbsent = $j->offsetUnset($intKeyed ? 99 : 'zz');
+            $onPresent = $j->offsetUnset($key);
+            return [$onUnallocated, $set, $overwrite, $onAbsent, $onPresent];
+        });
+    }
+
+    /* offsetExists/offsetGet are typed _IS_BOOL and IS_MIXED respectively and
+       were never part of this mismatch — pin them so a future "make it all
+       void" sweep cannot quietly take them along. */
+    $r['offsetExists/offsetGet keep their types'] = capture(function () use ($class) {
+        $j = new $class(2);
+        $j[3] = 30;
+        return [$j->offsetExists(3), $j->offsetExists(4), $j->offsetGet(3)];
+    });
+
+    /* $type is required. The exception CLASS is the contract; the message is
+       not comparable — the engine words zpp failures differently for internal
+       and userland functions, so only the class is asserted here. */
+    $r['zero-arg construction raises'] = (function () use ($class) {
+        try {
+            new $class();
+            return 'no exception';
+        } catch (\Throwable $e) {
+            return get_class($e);
+        }
+    })();
+
+    return $r;
+}, requires: '2.6.0');
+
 printf("\next-judy %s: %d checks, %d divergences%s\n",
     EXT_VERSION, $checks, $failures,
     $skipped > 0 ? ", $skipped skipped (need a newer extension)" : '');
