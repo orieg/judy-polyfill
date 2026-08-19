@@ -29,9 +29,18 @@ native performance transparently:
 ```json
 {
     "require": { "orieg/judy-polyfill": "^2.5" },
-    "suggest": { "ext-judy": "2-4x less memory and C-speed operations" }
+    "suggest": { "ext-judy": "C-speed operations and lower memory" }
 }
 ```
+
+That `suggest` line deliberately carries no memory multiplier. The saving is
+real but strongly type-dependent, and no single range describes it: measured at
+500k keys, `Judy::BITSET` is smaller by more than 40x and `INT_TO_INT` by about
+2.1x, while `INT_TO_MIXED` — which stores a `zval` pointer per slot — is about
+1.11x **larger** than the PHP array it replaces
+([php-judy#172](https://github.com/orieg/php-judy/issues/172), which is also
+where the old "2-4x" figure came from and why it did not survive being measured
+with an instrument that can see a Judy index).
 
 This package deliberately does **not** declare `"provide": {"ext-judy": "*"}`:
 a package that hard-requires `ext-judy` is asking for the native
@@ -42,10 +51,10 @@ performance profile, and the polyfill cannot honestly satisfy that.
 The polyfill is **API-compatible, not performance-equivalent**. It is backed
 by a native PHP array:
 
-- ✅ All 10 Judy type constants, full method surface of ext-judy 2.5
+- ✅ All 10 Judy type constants, full method surface of ext-judy 2.6
 - ✅ Same coercion, ordering, exception, and edge-case semantics — verified
   by a [parity suite](tests/parity.php) that runs every covered scenario
-  against both implementations in CI (1501 checks)
+  against both implementations in CI (1512 checks)
 - ✅ **Signature** parity too, not just behavior: the suite reflects over both
   classes and diffs every public method's parameters, defaults and return type.
   Behavior parity alone cannot catch "the method exists but will not accept
@@ -115,11 +124,18 @@ php -d extension=judy tests/parity.php      # diff every scenario vs native
 ```
 
 CI runs both legs on PHP 8.1–8.5, with the extension installed via
-[PIE](https://github.com/php/pie), and a third leg that builds ext-judy 2.4.2
-and 2.5.0 from source. PIE installs the *latest released* extension, so without
-that leg the version gates below are never exercised — and a scenario that
-calls a method with arguments an older extension cannot accept looks green
+[PIE](https://github.com/php/pie), and a third leg that builds ext-judy 2.4.2,
+2.5.0 and 2.6.0 from source. PIE installs the *latest released* extension, so
+without that leg the version gates below are never exercised — and a scenario
+that calls a method with arguments an older extension cannot accept looks green
 until someone runs an old build by hand.
+
+The PIE leg takes the extension's **default** build. Since 2.6.0 that is the
+bundled, patched libJudy: `./configure` needs no system library and downloads
+nothing, so parity is measured against what `pie install orieg/judy` actually
+gives a user. The `--with-judy=DIR` path that links a system libJudy is still
+supported, and keeps parity coverage through the 2.6.0 entry in the
+from-source leg — the one build there that is not testing an old release.
 
 The parity suite is **version-aware**, because PIE installs the latest
 *released* extension while this package tracks the latest extension *API*, and
@@ -130,10 +146,30 @@ version it wants:
 ```
 SKIP [string/embedded-NUL keys] needs ext-judy >= 2.5.1, have 2.5.0
 SKIP [string/high-byte keys, bounded] needs ext-judy >= 2.5.0, have 2.4.2
-ext-judy 2.4.2: 999 checks, 0 divergences, 15 skipped (need a newer extension)
-ext-judy 2.5.0: 1270 checks, 0 divergences, 1 skipped (need a newer extension)
-ext-judy 2.5.2: 1501 checks, 0 divergences
+SKIP [2.6.0 conformance: void offsets, required $type] needs ext-judy >= 2.6.0, have 2.5.2
+ext-judy 2.4.2: 999 checks, 0 divergences, 16 skipped (need a newer extension)
+ext-judy 2.5.0: 1270 checks, 0 divergences, 2 skipped (need a newer extension)
+ext-judy 2.5.2: 1501 checks, 0 divergences, 1 skipped (need a newer extension)
+ext-judy 2.6.0: 1512 checks, 0 divergences
 ```
+
+ext-judy 2.6.0 added no API, so the polyfill needed no change to match it. It
+did make the extension conform to two contracts its own stub already declared,
+and in both the behaviour it moved to is the one the polyfill already had — so
+the 11 checks the 2.6.0 row adds are checks the *extension* newly passes:
+
+- `offsetSet()`/`offsetUnset()` called as methods now evaluate to `null`. Before
+  2.6.0 they returned a bool that reported whether the backing array had been
+  allocated yet rather than whether anything was unset, so the same call read
+  `false` on a fresh Judy and `true` on a populated one. The `$j[$k] = $v` and
+  `unset($j[$k])` operator forms always discarded it and are unaffected.
+- `new Judy()` with no arguments now raises `ArgumentCountError` for the `$type`
+  the signature has always declared required, instead of yielding a type-0
+  object whose every write warned.
+
+Both are gated at `requires: '2.6.0'`: against an older extension the polyfill
+is the correct one and the extension diverges, which is not a polyfill defect
+to fail the suite on.
 
 Nothing is silently dropped, and the suite strengthens on its own the moment
 CI's extension catches up. Failing instead would produce a permanently red

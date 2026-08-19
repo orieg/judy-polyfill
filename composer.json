@@ -28,7 +28,7 @@
         "php": ">=8.1"
     },
     "suggest": {
-        "ext-judy": "The native extension: 2-4x less memory and C-speed operations (pie install orieg/judy)"
+        "ext-judy": "The native extension: C-speed operations, and lower memory for most types — the ratio is type-dependent, see php-judy's BENCHMARK.md (pie install orieg/judy)"
     },
     "autoload": {
         "psr-4": {

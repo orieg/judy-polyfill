@@ -34,31 +34,54 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
-      - name: Install ext-judy via PIE
+      # No --with-judy and no libjudy-dev: since ext-judy 2.6.0 the bundled,
+      # patched libJudy is the default build and ./configure needs no system
+      # library. Passing --with-judy=/usr here would link a system libJudy
+      # instead, so the parity suite would validate a configuration that is
+      # NOT what `pie install orieg/judy` gives an ordinary user. The
+      # --with-judy path is still supported and still covered — by the 2.6.0
+      # entry in the parity-legacy matrix below.
+      - name: Install ext-judy via PIE (default = bundled libJudy)
         run: |
-          sudo apt-get update && sudo apt-get install -y libjudy-dev
           curl -fsSL https://github.com/php/pie/releases/latest/download/pie.phar \
             -o /usr/local/bin/pie && chmod +x /usr/local/bin/pie
-          sudo pie install orieg/judy --with-judy=/usr
+          sudo pie install orieg/judy
           php -r 'echo "ext-judy ", judy_version(), PHP_EOL;'
       - name: Parity tests (polyfill vs native)
         run: php tests/parity.php
       - name: Behavior tests (with extension loaded)
         run: php tests/behavior.php
 
-  # PIE installs the LATEST released extension, so the version gates in the
-  # parity suite — requires: '2.5.0', requires: '2.5.1' — were never exercised
-  # by CI. Three separate rounds of scenarios reached main containing calls a
-  # pre-2.5.0 extension cannot accept, each invisible until someone ran an old
-  # build by hand. This job builds the older tags from source and runs parity
-  # against them, so a missing gate fails the PR that introduces it.
+  # PIE installs the LATEST released extension, so the lower version gates in
+  # the parity suite — requires: '2.5.0', requires: '2.5.1' — were never
+  # exercised by CI. Three separate rounds of scenarios reached main containing
+  # calls a pre-2.5.0 extension cannot accept, each invisible until someone ran
+  # an old build by hand. This job builds the older tags from source and runs
+  # parity against them, so a missing gate fails the PR that introduces it.
+  #
+  # The v2.6.0 entry is here for a second reason: it is the repo's only
+  # remaining --with-judy=/usr build. 2.6.0 made the bundled libJudy the
+  # default, so the PIE job above now covers the default; this keeps the
+  # system-library path under parity coverage too. That path is not
+  # hypothetical — distro and PECL packagers use it, and php-judy#131 was a
+  # system libJudy miscompiling into silently-lost Judy::BITSET keys, which is
+  # exactly the kind of defect a parity suite is placed to see.
   parity-legacy:
     name: parity (ext-judy ${{ matrix.ext-version }}, from source)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        ext-version: ["v2.4.2", "v2.5.0"]
+        # configure-args is per-entry because the bundled build only became
+        # available (and default) in 2.6.0; 2.4.2 and 2.5.0 have no libJudy of
+        # their own and must link the system one.
+        include:
+          - ext-version: "v2.4.2"
+            configure-args: "--with-judy=/usr"
+          - ext-version: "v2.5.0"
+            configure-args: "--with-judy=/usr"
+          - ext-version: "v2.6.0"
+            configure-args: "--with-judy=/usr"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
@@ -74,7 +97,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y libjudy-dev
           cd ext-src
           phpize
-          ./configure --with-judy=/usr
+          ./configure ${{ matrix.configure-args }}
           make -j"$(nproc)"
           php -d extension="$PWD/modules/judy.so" -r 'echo "ext-judy ", judy_version(), PHP_EOL;'
       - name: Parity tests (polyfill vs native)
