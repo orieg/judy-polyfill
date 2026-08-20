@@ -6,13 +6,28 @@ namespace Orieg\JudyPolyfill;
  * Pure-PHP implementation of the Judy class from the judy extension
  * (https://github.com/orieg/php-judy).
  *
- * API-compatible with ext-judy 2.5; backed by a native PHP array, so it
+ * API-compatible with ext-judy 2.6; backed by a native PHP array, so it
  * provides compatibility, not the extension's memory/performance profile.
  * Behavioral notes and known divergences are documented in the README.
  */
 class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 {
-    public const POLYFILL_VERSION = '2.5.0-polyfill';
+    /**
+     * The extension API level this class implements, not the release number of
+     * this package — they track each other but are not the same thing, and the
+     * parity suite pins the difference. judy_version() returns this when the
+     * extension is absent, so code that branches on the extension's version
+     * sees which contract it is actually getting.
+     *
+     * The "-polyfill" suffix keeps the value unmistakable in logs and bug
+     * reports while staying usable in a version test: version_compare() ranks
+     * '2.6.0-polyfill' just ABOVE '2.6.0' and below '2.6.1', so the ordinary
+     * feature check version_compare(judy_version(), '2.6.0', '>=') is true
+     * here, as it should be — this class implements that API level. Ask
+     * extension_loaded('judy') instead when the question is whether the native
+     * extension is present rather than which contract is implemented.
+     */
+    public const POLYFILL_VERSION = '2.6.0-polyfill';
 
     public const BITSET = 1;
     public const INT_TO_INT = 2;
