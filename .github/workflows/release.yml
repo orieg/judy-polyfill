@@ -1,0 +1,56 @@
+name: Release
+
+# Packagist learns about a release from the repo webhook on tag push. This
+# workflow does the other half: it turns the tag into a GitHub Release whose
+# notes are the matching CHANGELOG.md section, so the two never drift and a
+# release is never published without notes.
+#
+# Releasing is therefore: update CHANGELOG.md in a PR, merge, push the tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      # A tag whose version is not in CHANGELOG.md means the release notes were
+      # forgotten. Fail here rather than publish an empty release: the tag can
+      # be moved, a published release is noticed.
+      - name: Extract release notes for ${{ github.ref_name }}
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/       { exit }
+            found                    { print }
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::error::No CHANGELOG.md section for [$version]; add one before tagging."
+            exit 1
+          fi
+          # The section body uses reference links ([#4], [php-judy#117]) whose
+          # definitions live at the bottom of the file. Carry them along or the
+          # release notes render them as literal text.
+          grep -E '^\[[^]]+\]: ' CHANGELOG.md >> release-notes.md
+          echo "Release notes for $version:"
+          cat release-notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file release-notes.md \
+            --verify-tag

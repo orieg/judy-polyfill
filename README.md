@@ -175,6 +175,26 @@ Nothing is silently dropped, and the suite strengthens on its own the moment
 CI's extension catches up. Failing instead would produce a permanently red
 build that everyone learns to ignore, which is worse than no check at all.
 
+## Versioning and releases
+
+Release numbers track the **ext-judy API level** this package implements, not
+its own feature count: `v2.6.0` means "matches the 2.6 Judy contract", and
+`Judy::POLYFILL_VERSION` reports the same level at runtime as
+`2.6.0-polyfill`. So `"orieg/judy-polyfill": "^2.6"` asks for the contract the
+2.6 extension has, and a caller can use the ordinary
+`version_compare(judy_version(), '2.6.0', '>=')` on either implementation.
+
+That coupling is the point — this package exists to be swapped for the
+extension — but it means a release here is not a semver statement about this
+package's own API. A behavioural fix that brings the polyfill *closer* to the
+extension can change what your code sees, because matching the extension is the
+contract; [CHANGELOG.md](CHANGELOG.md) calls out every such change.
+
+Releasing: update `CHANGELOG.md` in the PR, merge it, then push the tag. The
+release workflow turns the tag into a GitHub Release using that version's
+changelog section, and fails if the section is missing rather than publishing
+an empty release. Packagist picks the tag up from the repository webhook.
+
 ## License
 
 MIT. The Judy extension itself is licensed under the PHP License.
