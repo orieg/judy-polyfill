@@ -104,3 +104,18 @@ jobs:
         run: php -d extension="$PWD/ext-src/modules/judy.so" tests/parity.php
       - name: Behavior tests (with extension loaded)
         run: php -d extension="$PWD/ext-src/modules/judy.so" tests/behavior.php
+
+  ci:
+    name: CI
+    needs: [behavior, parity, parity-legacy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check all matrix jobs passed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "One or more CI matrix jobs failed."
+            exit 1
+          fi
+          echo "All CI matrix jobs passed."
+
