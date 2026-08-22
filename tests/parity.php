@@ -417,7 +417,7 @@ foreach ($stringTypes as $name => $type) {
         $r['getAll'] = capture(fn() => $j->getAll(['aa', 'missing']));
         $r['free shape'] = capture(fn() => memShape($j->free()));
         return $r;
-    });
+    }, requires: $type === 11 ? '2.6.0' : null);
 }
 
 /* increment on string int-valued types */
@@ -500,16 +500,21 @@ scenario('string/numeric-key types, bounded', function (string $class) {
     return $r;
 }, requires: '2.5.0');
 
-/** The seven string-keyed types, in one place: scenarios below want them. */
-const STRING_KEYED = [
-    4  => 'STRING_TO_INT',
-    5  => 'STRING_TO_MIXED',
-    7  => 'STRING_TO_MIXED_HASH',
-    8  => 'STRING_TO_INT_HASH',
-    9  => 'STRING_TO_MIXED_ADAPTIVE',
-    10 => 'STRING_TO_INT_ADAPTIVE',
-    11 => 'STRING_TO_ENTRY',
-];
+function stringKeyedTypes(): array
+{
+    $types = [
+        4  => 'STRING_TO_INT',
+        5  => 'STRING_TO_MIXED',
+        7  => 'STRING_TO_MIXED_HASH',
+        8  => 'STRING_TO_INT_HASH',
+        9  => 'STRING_TO_MIXED_ADAPTIVE',
+        10 => 'STRING_TO_INT_ADAPTIVE',
+    ];
+    if (extAtLeast('2.6.0')) {
+        $types[11] = 'STRING_TO_ENTRY';
+    }
+    return $types;
+}
 
 /** Hex-render anything key-shaped, so binary keys survive the diff printer. */
 function hex(mixed $v): mixed
@@ -551,7 +556,7 @@ scenario('string/embedded-NUL keys', function (string $class) {
     $nul = "ab\x00cd";
     $r = [];
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $val = fn(string $k) => $intValued ? strlen($k) : "v:$k";
         /* A fresh populated array per check: many of these mutate, and the
@@ -716,7 +721,7 @@ scenario('string/high-byte keys', function (string $class) {
     $r = [];
     $corpus = ["\x01", "\x7f", "\x80", "\xc3\xa9", "\xfe", "\xff", "a\xffb", "ab\xff", "ac", "\xff\xff"];
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $mk = function () use ($class, $type, $corpus, $intValued) {
             $j = new $class($type);
@@ -782,7 +787,7 @@ scenario('string/high-byte keys, bounded', function (string $class) {
     $r = [];
     $corpus = ["\x01", "\x7f", "\x80", "\xc3\xa9", "\xfe", "\xff", "a\xffb", "ab\xff", "ac", "\xff\xff"];
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $mk = function () use ($class, $type, $corpus, $intValued) {
             $j = new $class($type);
@@ -848,7 +853,7 @@ scenario('string/offset types', function (string $class) {
         'object' => new stdClass(),
     ];
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $val = fn(string $k) => $intValued ? strlen($k) : "v:$k";
         $mk = function () use ($class, $type, $val) {
@@ -1024,7 +1029,7 @@ scenario('string/slice bound types', function (string $class) {
         'array, string', 'object, string', 'null, string', 'string, null', 'null, null',
     ]));
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $mk = function () use ($class, $type, $intValued) {
             $j = new $class($type);
@@ -1087,7 +1092,7 @@ scenario('string/slice bound types', function (string $class) {
  */
 scenario('string/slice vs bounded reads', function (string $class) {
     $r = [];
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $mk = function () use ($class, $type, $intValued) {
             $j = new $class($type);
