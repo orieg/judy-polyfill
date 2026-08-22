@@ -34,7 +34,7 @@ Depend on the polyfill and suggest the extension. Your library runs out of the b
 
 The polyfill is **API-compatible and signature-identical** to `ext-judy 2.6.0`:
 
-- ✅ **Full 2.6 Method Surface**: Implements all 10 Judy type constants (`BITSET`, `INT_TO_INT`, `STRING_TO_MIXED`, etc.) and all public methods.
+- ✅ **Full 2.6 Method Surface**: Implements all 11 Judy type constants (`BITSET`, `INT_TO_INT`, `STRING_TO_MIXED`, `STRING_TO_ENTRY`, etc.) and all public methods.
 - ✅ **Strict Parity Verified**: 1,500+ automated test checks verifying ordering, type coercion, unsigned 64-bit boundaries, and exceptions against native `ext-judy`.
 - ✅ **Signature Parity**: Reflection tests diff parameter names, defaults, and return types against the extension stub.
 - ❌ **Memory Profile**: Backed by standard PHP arrays; hardware-accelerated memory compression requires `ext-judy`.

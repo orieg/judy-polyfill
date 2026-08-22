@@ -8,6 +8,20 @@ rather than counting its own features: a release is numbered for the extension
 version whose behaviour it matches, so `^2.6` here means "the 2.6 Judy
 contract". `Judy::POLYFILL_VERSION` reports the same level at runtime.
 
+## [Unreleased]
+
+### Added
+
+- Support for compound cache entry type `Judy::STRING_TO_ENTRY` (11) and native TTL cache entry methods:
+  - `set(string $key, mixed $value, int $ttl = 0, int $flags = 0): void`
+  - `get(string $key, mixed &$expiresAt = null, mixed &$flags = null): mixed`
+  - `pruneExpired(?int $now = null): int`
+  - `getEntry(string $key): ?array`
+  - `getExpiry(string $key): ?int`
+  - `getFlags(string $key): ?int`
+- Pure-PHP expiration handling, TTL pruning, entry metadata inspection, and unboxed ArrayAccess/Iterator integration.
+- Differential parity and behavior tests covering `STRING_TO_ENTRY` operations. ([#10])
+
 ## [2.6.0] - 2026-08-19
 
 Matches the ext-judy 2.6 contract. 2.6.0 added no API, so nothing in the class
@@ -123,5 +137,6 @@ extension version it claims to support.
 [#4]: https://github.com/orieg/judy-polyfill/pull/4
 [#5]: https://github.com/orieg/judy-polyfill/pull/5
 [#6]: https://github.com/orieg/judy-polyfill/pull/6
+[#10]: https://github.com/orieg/judy-polyfill/issues/10
 [php-judy#96]: https://github.com/orieg/php-judy/issues/96
 [php-judy#117]: https://github.com/orieg/php-judy/issues/117

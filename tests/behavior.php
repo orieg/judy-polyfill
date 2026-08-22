@@ -146,6 +146,7 @@ foreach ([
     $judyClass::STRING_TO_INT_HASH       => 'Judy STRING_TO_INT_HASH keys must not contain embedded null bytes',
     $judyClass::STRING_TO_MIXED_ADAPTIVE => 'Judy adaptive keys must not contain embedded null bytes',
     $judyClass::STRING_TO_INT_ADAPTIVE   => 'Judy adaptive keys must not contain embedded null bytes',
+    $judyClass::STRING_TO_ENTRY          => 'Judy STRING_TO_ENTRY keys must not contain embedded null bytes',
 ] as $nulType => $message) {
     $msg = function (callable $fn): string {
         try {
@@ -183,7 +184,7 @@ foreach ([
     ] as $label => $call) {
         check("NUL rejected by $label on type $nulType", $message, $msg($call));
     }
-    // Not a write path, so it is guarded on all six; increment() reports the
+    // Not a write path, so it is guarded on all seven; increment() reports the
     // type restriction first where the type cannot increment at all.
     check("NUL rejected by increment on type $nulType",
         in_array($nulType, [$judyClass::STRING_TO_INT, $judyClass::STRING_TO_INT_HASH], true)
@@ -244,6 +245,7 @@ $stringKeyed = [
     $judyClass::STRING_TO_INT, $judyClass::STRING_TO_MIXED,
     $judyClass::STRING_TO_MIXED_HASH, $judyClass::STRING_TO_INT_HASH,
     $judyClass::STRING_TO_MIXED_ADAPTIVE, $judyClass::STRING_TO_INT_ADAPTIVE,
+    $judyClass::STRING_TO_ENTRY,
 ];
 
 foreach ($stringKeyed as $sType) {
@@ -436,6 +438,166 @@ $u = unserialize(serialize($j));
 check('serialize roundtrip', [$j->getType(), $j->toArray()], [$u->getType(), $u->toArray()]);
 check('json', json_encode($j->toArray()), json_encode($j));
 check('equals', true, $j->equals($u));
+
+// ── STRING_TO_ENTRY cache entry and TTL semantics ─────────────────
+$e = new $judyClass($judyClass::STRING_TO_ENTRY);
+check('STRING_TO_ENTRY getType', $judyClass::STRING_TO_ENTRY, $e->getType());
+
+// Basic set without TTL / flags
+$e->set("user:1", ["id" => 1, "name" => "Alice"]);
+check('STRING_TO_ENTRY get basic', ["id" => 1, "name" => "Alice"], $e->get("user:1"));
+check('STRING_TO_ENTRY getExpiry basic', 0, $e->getExpiry("user:1"));
+check('STRING_TO_ENTRY getFlags basic', 0, $e->getFlags("user:1"));
+
+// Set with TTL and flags
+$e->set("session:abc", "data_payload", ttl: 3600, flags: 42);
+$expiry = null;
+$flags = null;
+$val = $e->get("session:abc", $expiry, $flags);
+check('STRING_TO_ENTRY get with refs', "data_payload", $val);
+check('STRING_TO_ENTRY expiry > time', true, $expiry > time());
+check('STRING_TO_ENTRY flags == 42', 42, $flags);
+check('STRING_TO_ENTRY getExpiry matches', $expiry, $e->getExpiry("session:abc"));
+check('STRING_TO_ENTRY getFlags matches', 42, $e->getFlags("session:abc"));
+
+// getEntry
+$entry = $e->getEntry("session:abc");
+check('STRING_TO_ENTRY getEntry value', "data_payload", $entry["value"] ?? null);
+check('STRING_TO_ENTRY getEntry expires_at', $expiry, $entry["expires_at"] ?? null);
+check('STRING_TO_ENTRY getEntry flags', 42, $entry["flags"] ?? null);
+check('STRING_TO_ENTRY getEntry is_expired', false, $entry["is_expired"] ?? null);
+
+// Non-existent key
+check('STRING_TO_ENTRY get non-existent', null, $e->get("non_existent"));
+check('STRING_TO_ENTRY getEntry non-existent', null, $e->getEntry("non_existent"));
+check('STRING_TO_ENTRY getExpiry non-existent', null, $e->getExpiry("non_existent"));
+check('STRING_TO_ENTRY getFlags non-existent', null, $e->getFlags("non_existent"));
+
+// ArrayAccess and Countable support
+$ea = new $judyClass($judyClass::STRING_TO_ENTRY);
+$ea["k1"] = "val1";
+$ea["k2"] = 12345;
+$ea["k3"] = ["nested" => true];
+check('STRING_TO_ENTRY count', 3, count($ea));
+check('STRING_TO_ENTRY isset k1', true, isset($ea["k1"]));
+check('STRING_TO_ENTRY isset k2', true, isset($ea["k2"]));
+check('STRING_TO_ENTRY isset k4', false, isset($ea["k4"]));
+check('STRING_TO_ENTRY read k1', "val1", $ea["k1"]);
+check('STRING_TO_ENTRY read k2', 12345, $ea["k2"]);
+check('STRING_TO_ENTRY read k3', ["nested" => true], $ea["k3"]);
+unset($ea["k2"]);
+check('STRING_TO_ENTRY count after unset', 2, count($ea));
+check('STRING_TO_ENTRY isset after unset', false, isset($ea["k2"]));
+check('STRING_TO_ENTRY read after unset', null, $ea["k2"]);
+
+// TTL expiration and pruneExpired()
+$ep = new $judyClass($judyClass::STRING_TO_ENTRY);
+$now = 1700000000;
+$ep->set("k1", "val1", ttl: 10);
+$ep->set("k2", "val2", ttl: 100);
+$ep->set("k3", "val3", ttl: 0);
+$exp1 = $ep->getExpiry("k1");
+$exp2 = $ep->getExpiry("k2");
+$exp3 = $ep->getExpiry("k3");
+check('STRING_TO_ENTRY exp1 > 0', true, $exp1 > 0);
+check('STRING_TO_ENTRY exp2 > exp1', true, $exp2 > $exp1);
+check('STRING_TO_ENTRY exp3 == 0', 0, $exp3);
+check('STRING_TO_ENTRY count before prune', 3, count($ep));
+
+$pruned = $ep->pruneExpired($exp1 - 5);
+check('STRING_TO_ENTRY prune before exp1', 0, $pruned);
+check('STRING_TO_ENTRY count after prune 0', 3, count($ep));
+
+$pruned = $ep->pruneExpired($exp1 + 1);
+check('STRING_TO_ENTRY prune exp1', 1, $pruned);
+check('STRING_TO_ENTRY count after prune 1', 2, count($ep));
+check('STRING_TO_ENTRY k1 absent after prune', null, $ep->get("k1"));
+check('STRING_TO_ENTRY isset k1 false after prune', false, isset($ep["k1"]));
+check('STRING_TO_ENTRY k2 present', "val2", $ep->get("k2"));
+check('STRING_TO_ENTRY k3 present', "val3", $ep->get("k3"));
+
+$pruned = $ep->pruneExpired($exp2 + 1);
+check('STRING_TO_ENTRY prune exp2', 1, $pruned);
+check('STRING_TO_ENTRY count after prune 2', 1, count($ep));
+check('STRING_TO_ENTRY k2 absent after prune', null, $ep->get("k2"));
+check('STRING_TO_ENTRY k3 still present', "val3", $ep->get("k3"));
+
+// Iterator, navigation and toArray()
+$en = new $judyClass($judyClass::STRING_TO_ENTRY);
+$en->set("charlie", 300);
+$en->set("alice", 100);
+$en->set("bob", 200);
+
+$iterOut = [];
+foreach ($en as $k => $v) {
+    $iterOut[$k] = $v;
+}
+check('STRING_TO_ENTRY foreach sorted', ["alice" => 100, "bob" => 200, "charlie" => 300], $iterOut);
+check('STRING_TO_ENTRY first', "alice", $en->first());
+check('STRING_TO_ENTRY searchNext', "bob", $en->searchNext("alice"));
+check('STRING_TO_ENTRY last', "charlie", $en->last());
+check('STRING_TO_ENTRY prev', "bob", $en->prev("charlie"));
+check('STRING_TO_ENTRY toArray', ["alice" => 100, "bob" => 200, "charlie" => 300], $en->toArray());
+check('STRING_TO_ENTRY keys', ["alice", "bob", "charlie"], $en->keys());
+check('STRING_TO_ENTRY values', [100, 200, 300], $en->values());
+
+// Clone and slice
+$es = new $judyClass($judyClass::STRING_TO_ENTRY);
+$es->set("a", 1, ttl: 50, flags: 1);
+$es->set("b", 2, ttl: 100, flags: 2);
+$es->set("c", 3, ttl: 150, flags: 3);
+
+$cloned = clone $es;
+check('STRING_TO_ENTRY clone type', $judyClass::STRING_TO_ENTRY, $cloned->getType());
+check('STRING_TO_ENTRY clone count', 3, count($cloned));
+check('STRING_TO_ENTRY clone get', 2, $cloned->get("b"));
+check('STRING_TO_ENTRY clone getFlags', 2, $cloned->getFlags("b"));
+check('STRING_TO_ENTRY clone getExpiry', $es->getExpiry("b"), $cloned->getExpiry("b"));
+
+$sliced = $es->slice("a", "b");
+check('STRING_TO_ENTRY slice type', $judyClass::STRING_TO_ENTRY, $sliced->getType());
+check('STRING_TO_ENTRY slice count', 2, count($sliced));
+check('STRING_TO_ENTRY slice keys', ["a", "b"], $sliced->keys());
+check('STRING_TO_ENTRY slice getFlags a', 1, $sliced->getFlags("a"));
+check('STRING_TO_ENTRY slice getFlags b', 2, $sliced->getFlags("b"));
+
+// Serialization
+$es_ser = unserialize(serialize($es));
+check('STRING_TO_ENTRY unserialize type', $judyClass::STRING_TO_ENTRY, $es_ser->getType());
+check('STRING_TO_ENTRY unserialize count', 3, count($es_ser));
+check('STRING_TO_ENTRY unserialize get a', 1, $es_ser["a"]);
+check('STRING_TO_ENTRY unserialize get b', 2, $es_ser["b"]);
+check('STRING_TO_ENTRY unserialize get c', 3, $es_ser["c"]);
+
+// TypeError when entry methods called on non-STRING_TO_ENTRY
+$intJ = new $judyClass($judyClass::INT_TO_INT);
+throwsWith('set on INT_TO_INT', \TypeError::class,
+    'Judy::set() is only supported for STRING_TO_ENTRY arrays',
+    fn() => $intJ->set("key", 123));
+throwsWith('get on INT_TO_INT', \TypeError::class,
+    'Judy::get() is only supported for STRING_TO_ENTRY arrays',
+    fn() => $intJ->get("key"));
+throwsWith('pruneExpired on INT_TO_INT', \TypeError::class,
+    'Judy::pruneExpired() is only supported for STRING_TO_ENTRY arrays',
+    fn() => $intJ->pruneExpired());
+throwsWith('getEntry on INT_TO_INT', \TypeError::class,
+    'Judy::getEntry() is only supported for STRING_TO_ENTRY arrays',
+    fn() => $intJ->getEntry("key"));
+throwsWith('getExpiry on INT_TO_INT', \TypeError::class,
+    'Judy::getExpiry() is only supported for STRING_TO_ENTRY arrays',
+    fn() => $intJ->getExpiry("key"));
+throwsWith('getFlags on INT_TO_INT', \TypeError::class,
+    'Judy::getFlags() is only supported for STRING_TO_ENTRY arrays',
+    fn() => $intJ->getFlags("key"));
+
+// Functional methods on STRING_TO_ENTRY
+$ef = new $judyClass($judyClass::STRING_TO_ENTRY);
+$ef->set("x", 10);
+$ef->set("y", 20);
+$filtered = $ef->filter(fn($v, $k) => $v > 15);
+check('STRING_TO_ENTRY filter', ["y" => 20], $filtered->toArray());
+$mapped = $ef->map(fn($v, $k) => $v * 2);
+check('STRING_TO_ENTRY map', ["x" => 20, "y" => 40], $mapped->toArray());
 
 if ($failures === 0) {
     echo "behavior: all checks passed\n";
