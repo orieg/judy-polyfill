@@ -8,7 +8,7 @@ rather than counting its own features: a release is numbered for the extension
 version whose behaviour it matches, so `^2.6` here means "the 2.6 Judy
 contract". `Judy::POLYFILL_VERSION` reports the same level at runtime.
 
-## [Unreleased]
+## [2.7.0] - 2026-08-22
 
 ### Added
 
