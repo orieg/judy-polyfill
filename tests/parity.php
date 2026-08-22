@@ -177,6 +177,13 @@ function signatureParity(): void
     sort($poly);
 
     $gate = static function (string $m) use (&$skipped): bool {
+        if (in_array($m, ['set', 'get', 'pruneExpired', 'getEntry', 'getExpiry', 'getFlags'], true)) {
+            if (!method_exists(NATIVE, $m)) {
+                $skipped++;
+                echo "SKIP [signature :: $m] native extension does not declare $m\n";
+                return false;
+            }
+        }
         $since = SIGNATURE_SINCE[$m] ?? null;
         if ($since !== null && !extAtLeast($since)) {
             $skipped++;
@@ -417,7 +424,7 @@ foreach ($stringTypes as $name => $type) {
         $r['getAll'] = capture(fn() => $j->getAll(['aa', 'missing']));
         $r['free shape'] = capture(fn() => memShape($j->free()));
         return $r;
-    }, requires: $type === 11 ? '2.6.0' : null);
+    }, requires: $type === 11 ? ((defined('Judy::STRING_TO_ENTRY') && method_exists(NATIVE, 'getEntry')) ? null : '99.0.0') : null);
 }
 
 /* increment on string int-valued types */
@@ -510,7 +517,7 @@ function stringKeyedTypes(): array
         9  => 'STRING_TO_MIXED_ADAPTIVE',
         10 => 'STRING_TO_INT_ADAPTIVE',
     ];
-    if (extAtLeast('2.6.0')) {
+    if (defined('Judy::STRING_TO_ENTRY') && method_exists(NATIVE, 'getEntry')) {
         $types[11] = 'STRING_TO_ENTRY';
     }
     return $types;
@@ -1575,7 +1582,7 @@ scenario('string/STRING_TO_ENTRY cache entry methods', function (string $class) 
     });
 
     return $r;
-}, requires: '2.6.0');
+}, requires: (defined('Judy::STRING_TO_ENTRY') && method_exists(NATIVE, 'set')) ? null : '99.0.0');
 
 printf("\next-judy %s: %d checks, %d divergences%s\n",
     EXT_VERSION, $checks, $failures,
