@@ -50,6 +50,12 @@ const SIGNATURE_SINCE = [
     '__construct'          => '2.5.0',   // $optimizeIteration
     'fromArray'            => '2.5.0',
     'isIterationOptimized' => '2.5.0',
+    'set'                  => '2.6.0',
+    'get'                  => '2.6.0',
+    'pruneExpired'         => '2.6.0',
+    'getEntry'             => '2.6.0',
+    'getExpiry'            => '2.6.0',
+    'getFlags'             => '2.6.0',
 ];
 
 /** Normalize any outcome (value/exception) into a comparable form. */
@@ -213,7 +219,8 @@ signatureParity();
 
 $intTypes    = ['BITSET' => 1, 'INT_TO_INT' => 2, 'INT_TO_MIXED' => 3, 'INT_TO_PACKED' => 6];
 $stringTypes = ['STRING_TO_INT' => 4, 'STRING_TO_MIXED' => 5, 'STRING_TO_MIXED_HASH' => 7,
-                'STRING_TO_INT_HASH' => 8, 'STRING_TO_MIXED_ADAPTIVE' => 9, 'STRING_TO_INT_ADAPTIVE' => 10];
+                'STRING_TO_INT_HASH' => 8, 'STRING_TO_MIXED_ADAPTIVE' => 9, 'STRING_TO_INT_ADAPTIVE' => 10,
+                'STRING_TO_ENTRY' => 11];
 
 /* ── Integer-keyed scenarios ─────────────────────────────────── */
 
@@ -410,7 +417,7 @@ foreach ($stringTypes as $name => $type) {
         $r['getAll'] = capture(fn() => $j->getAll(['aa', 'missing']));
         $r['free shape'] = capture(fn() => memShape($j->free()));
         return $r;
-    });
+    }, requires: $type === 11 ? '2.6.0' : null);
 }
 
 /* increment on string int-valued types */
@@ -493,15 +500,21 @@ scenario('string/numeric-key types, bounded', function (string $class) {
     return $r;
 }, requires: '2.5.0');
 
-/** The six string-keyed types, in one place: three scenarios below want them. */
-const STRING_KEYED = [
-    4  => 'STRING_TO_INT',
-    5  => 'STRING_TO_MIXED',
-    7  => 'STRING_TO_MIXED_HASH',
-    8  => 'STRING_TO_INT_HASH',
-    9  => 'STRING_TO_MIXED_ADAPTIVE',
-    10 => 'STRING_TO_INT_ADAPTIVE',
-];
+function stringKeyedTypes(): array
+{
+    $types = [
+        4  => 'STRING_TO_INT',
+        5  => 'STRING_TO_MIXED',
+        7  => 'STRING_TO_MIXED_HASH',
+        8  => 'STRING_TO_INT_HASH',
+        9  => 'STRING_TO_MIXED_ADAPTIVE',
+        10 => 'STRING_TO_INT_ADAPTIVE',
+    ];
+    if (extAtLeast('2.6.0')) {
+        $types[11] = 'STRING_TO_ENTRY';
+    }
+    return $types;
+}
 
 /** Hex-render anything key-shaped, so binary keys survive the diff printer. */
 function hex(mixed $v): mixed
@@ -543,7 +556,7 @@ scenario('string/embedded-NUL keys', function (string $class) {
     $nul = "ab\x00cd";
     $r = [];
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $val = fn(string $k) => $intValued ? strlen($k) : "v:$k";
         /* A fresh populated array per check: many of these mutate, and the
@@ -708,7 +721,7 @@ scenario('string/high-byte keys', function (string $class) {
     $r = [];
     $corpus = ["\x01", "\x7f", "\x80", "\xc3\xa9", "\xfe", "\xff", "a\xffb", "ab\xff", "ac", "\xff\xff"];
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $mk = function () use ($class, $type, $corpus, $intValued) {
             $j = new $class($type);
@@ -774,7 +787,7 @@ scenario('string/high-byte keys, bounded', function (string $class) {
     $r = [];
     $corpus = ["\x01", "\x7f", "\x80", "\xc3\xa9", "\xfe", "\xff", "a\xffb", "ab\xff", "ac", "\xff\xff"];
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $mk = function () use ($class, $type, $corpus, $intValued) {
             $j = new $class($type);
@@ -840,7 +853,7 @@ scenario('string/offset types', function (string $class) {
         'object' => new stdClass(),
     ];
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $val = fn(string $k) => $intValued ? strlen($k) : "v:$k";
         $mk = function () use ($class, $type, $val) {
@@ -1016,7 +1029,7 @@ scenario('string/slice bound types', function (string $class) {
         'array, string', 'object, string', 'null, string', 'string, null', 'null, null',
     ]));
 
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $mk = function () use ($class, $type, $intValued) {
             $j = new $class($type);
@@ -1079,7 +1092,7 @@ scenario('string/slice bound types', function (string $class) {
  */
 scenario('string/slice vs bounded reads', function (string $class) {
     $r = [];
-    foreach (STRING_KEYED as $type => $name) {
+    foreach (stringKeyedTypes() as $type => $name) {
         $intValued = in_array($type, [4, 8, 10], true);
         $mk = function () use ($class, $type, $intValued) {
             $j = new $class($type);
@@ -1407,6 +1420,159 @@ scenario('2.6.0 conformance: void offsets, required $type', function (string $cl
             return get_class($e);
         }
     })();
+
+    return $r;
+}, requires: '2.6.0');
+
+/* ── STRING_TO_ENTRY cache entry and TTL methods (ext-judy 2.6.0) ── */
+scenario('string/STRING_TO_ENTRY cache entry methods', function (string $class) {
+    $r = [];
+    $j = new $class(11);
+
+    $r['type'] = capture(fn() => $j->getType());
+
+    $r['basic set/get'] = capture(function () use ($j) {
+        $j->set("user:1", ["id" => 1, "name" => "Alice"]);
+        return [
+            $j->get("user:1"),
+            $j->getExpiry("user:1"),
+            $j->getFlags("user:1"),
+        ];
+    });
+
+    $r['set with ttl and flags'] = capture(function () use ($j) {
+        $j->set("session:abc", "data_payload", ttl: 3600, flags: 42);
+        $exp = null;
+        $flags = null;
+        $val = $j->get("session:abc", $exp, $flags);
+        return [
+            $val,
+            is_int($exp) && $exp > time(),
+            $flags,
+            $j->getExpiry("session:abc") === $exp,
+            $j->getFlags("session:abc") === 42,
+        ];
+    });
+
+    $r['getEntry'] = capture(function () use ($j) {
+        $entry = $j->getEntry("session:abc");
+        return [
+            $entry["value"] ?? null,
+            is_int($entry["expires_at"] ?? null),
+            $entry["flags"] ?? null,
+            $entry["is_expired"] ?? null,
+        ];
+    });
+
+    $r['non-existent keys'] = capture(function () use ($j) {
+        return [
+            $j->get("non_existent"),
+            $j->getEntry("non_existent"),
+            $j->getExpiry("non_existent"),
+            $j->getFlags("non_existent"),
+        ];
+    });
+
+    $r['arrayaccess'] = capture(function () use ($class) {
+        $x = new $class(11);
+        $x["k1"] = "val1";
+        $x["k2"] = 12345;
+        $x["k3"] = ["nested" => true];
+        $c1 = count($x);
+        $h1 = isset($x["k1"]);
+        $h2 = isset($x["k2"]);
+        $h4 = isset($x["k4"]);
+        $v1 = $x["k1"];
+        $v2 = $x["k2"];
+        $v3 = $x["k3"];
+        unset($x["k2"]);
+        $c2 = count($x);
+        $h2_after = isset($x["k2"]);
+        $v2_after = $x["k2"];
+        return [$c1, $h1, $h2, $h4, $v1, $v2, $v3, $c2, $h2_after, $v2_after];
+    });
+
+    $r['pruneExpired'] = capture(function () use ($class) {
+        $x = new $class(11);
+        $now = 1700000000;
+        $x->set("k1", "val1", ttl: 10);
+        $x->set("k2", "val2", ttl: 100);
+        $x->set("k3", "val3", ttl: 0);
+        $exp1 = $x->getExpiry("k1");
+        $exp2 = $x->getExpiry("k2");
+
+        $p0 = $x->pruneExpired($exp1 - 5);
+        $c0 = count($x);
+        $p1 = $x->pruneExpired($exp1 + 1);
+        $c1 = count($x);
+        $k1_val = $x->get("k1");
+        $k1_has = isset($x["k1"]);
+        $k2_val = $x->get("k2");
+        $k3_val = $x->get("k3");
+        $p2 = $x->pruneExpired($exp2 + 1);
+        $c2 = count($x);
+        $k2_after = $x->get("k2");
+        $k3_after = $x->get("k3");
+        return [
+            $p0, $c0, $p1, $c1, $k1_val, $k1_has, $k2_val, $k3_val,
+            $p2, $c2, $k2_after, $k3_after
+        ];
+    });
+
+    $r['navigation and bulk'] = capture(function () use ($class) {
+        $x = new $class(11);
+        $x->set("charlie", 300);
+        $x->set("alice", 100);
+        $x->set("bob", 200);
+        $iter = [];
+        foreach ($x as $k => $v) {
+            $iter[$k] = $v;
+        }
+        return [
+            $iter,
+            $x->first(),
+            $x->searchNext("alice"),
+            $x->last(),
+            $x->prev("charlie"),
+            $x->toArray(),
+            $x->keys(),
+            $x->values(),
+        ];
+    });
+
+    $r['slice and clone'] = capture(function () use ($class) {
+        $x = new $class(11);
+        $x->set("a", 1, ttl: 50, flags: 1);
+        $x->set("b", 2, ttl: 100, flags: 2);
+        $x->set("c", 3, ttl: 150, flags: 3);
+        $cloned = clone $x;
+        $sliced = $x->slice("a", "b");
+        return [
+            $cloned->getType(), count($cloned), $cloned->get("b"), $cloned->getFlags("b"),
+            $sliced->getType(), count($sliced), $sliced->keys(), $sliced->getFlags("a"), $sliced->getFlags("b"),
+        ];
+    });
+
+    $r['type errors on other types'] = capture(function () use ($class) {
+        $intJ = new $class(2);
+        $errs = [];
+        foreach ([
+            'set'          => fn() => $intJ->set("key", 123),
+            'get'          => fn() => $intJ->get("key"),
+            'pruneExpired' => fn() => $intJ->pruneExpired(),
+            'getEntry'     => fn() => $intJ->getEntry("key"),
+            'getExpiry'    => fn() => $intJ->getExpiry("key"),
+            'getFlags'     => fn() => $intJ->getFlags("key"),
+        ] as $method => $fn) {
+            try {
+                $fn();
+                $errs[$method] = 'no exception';
+            } catch (\Throwable $e) {
+                $errs[$method] = get_class($e) . ': ' . $e->getMessage();
+            }
+        }
+        return $errs;
+    });
 
     return $r;
 }, requires: '2.6.0');
