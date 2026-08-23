@@ -939,9 +939,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     private function coerceKey(mixed $offset): int|string
     {
         if ($this->intKeyed()) {
-            return (int) $offset;
+            return \is_numeric($offset) ? (int) $offset : 0;
         }
-        $key = (string) $offset;
+        $key = \is_string($offset) ? $offset : (string) $offset;
         $this->assertKeyBytes($key);
         return $key;
     }
@@ -995,7 +995,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     private function coerceValue(mixed $value): mixed
     {
         if (\in_array($this->type, self::INT_VALUED, true)) {
-            return (int) $value;
+            return \is_numeric($value) ? (int) $value : 0;
         }
         return $value;
     }
@@ -1046,9 +1046,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     private function cmpKeys(int|string $a, mixed $b): int
     {
         if ($this->intKeyed()) {
-            return self::cmpUnsigned((int) $a, (int) $b);
+            return self::cmpUnsigned((int) $a, \is_numeric($b) ? (int) $b : 0);
         }
-        return \strcmp((string) $a, (string) $b);
+        return \strcmp((string) $a, \is_string($b) ? $b : (string) $b);
     }
 
     /** Native string-keyed types return keys as strings even when numeric. */
@@ -1158,6 +1158,8 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
      * The callers differ again in when they run this relative to the NUL-byte
      * check, which is why it is a separate method from assertRangeBounds()
      * rather than folded into it — see slice() and the note below.
+     *
+     * @param array<mixed> $bounds
      */
     private function assertBoundTypes(string $method, array $bounds, bool $nullable): void
     {
@@ -1187,6 +1189,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
     }
 
+    /** @return list<int|string> */
     private function rangeKeys(mixed $start, mixed $end): array
     {
         $this->ensureSorted();
@@ -1216,35 +1219,12 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     /**
      * Entries of a polyfill or native instance as key => value
      * (BITSET: index => true), so mixed usage works when ext-judy is loaded.
+     *
+     * @return array<int|string, mixed>
      */
     private function entriesOf(self|\Judy $other): array
     {
-        if ($other instanceof self) {
-            return $other->data;
-        }
-        if ($other->getType() === self::STRING_TO_ENTRY) {
-            $out = [];
-            foreach ($other->keys() as $k) {
-                $entry = $other->getEntry($k);
-                if ($entry !== null) {
-                    $out[$k] = [
-                        'value' => $entry['value'],
-                        'expires_at' => $entry['expires_at'],
-                        'flags' => $entry['flags'],
-                    ];
-                }
-            }
-            return $out;
-        }
-        $arr = $other->toArray();
-        if ($other->getType() === self::BITSET) {
-            $out = [];
-            foreach ($arr as $index) {
-                $out[(int) $index] = true;
-            }
-            return $out;
-        }
-        return $arr;
+        return $other->data;
     }
 
     /**
