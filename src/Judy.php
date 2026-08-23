@@ -528,7 +528,8 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     {
         if ($this->type === self::BITSET) {
             foreach ($data as $index) {
-                $this->data[(int) $index] = true;
+                $idx = \is_numeric($index) ? (int) $index : 0;
+                $this->data[$idx] = true;
             }
         } elseif ($this->type === self::STRING_TO_ENTRY) {
             foreach ($data as $k => $v) {
@@ -615,7 +616,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             throw new \Exception('Judy::increment() is only supported for INT_TO_INT, STRING_TO_INT and STRING_TO_INT_HASH types');
         }
         $k = $this->coerceKey($key);
-        $new = (int) ($this->data[$k] ?? 0) + $amount;
+        $curr = $this->data[$k] ?? 0;
+        $currInt = \is_numeric($curr) ? (int) $curr : 0;
+        $new = $currInt + $amount;
         $this->data[$k] = $new;
         $this->sorted = false;
         return $new;
@@ -646,7 +649,8 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             return true;
         }
         if ($this->type === self::STRING_TO_ENTRY) {
-            return $this->data[$key]['value'];
+            $entry = $this->data[$key];
+            return \is_array($entry) && \array_key_exists('value', $entry) ? $entry['value'] : null;
         }
         return $this->data[$key];
     }
@@ -667,7 +671,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     {
         $this->ensureSorted();
         foreach ($this->data as $k => $v) {
-            $value = $this->type === self::BITSET ? true : ($this->type === self::STRING_TO_ENTRY ? $v['value'] : $v);
+            $value = $this->type === self::BITSET
+                ? true
+                : ($this->type === self::STRING_TO_ENTRY && \is_array($v) && \array_key_exists('value', $v) ? $v['value'] : $v);
             $callback($value, $k);
         }
     }
@@ -677,7 +683,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         $result = new static($this->type);
         $this->ensureSorted();
         foreach ($this->data as $k => $v) {
-            $value = $this->type === self::BITSET ? true : ($this->type === self::STRING_TO_ENTRY ? $v['value'] : $v);
+            $value = $this->type === self::BITSET
+                ? true
+                : ($this->type === self::STRING_TO_ENTRY && \is_array($v) && \array_key_exists('value', $v) ? $v['value'] : $v);
             if ($predicate($value, $k)) {
                 if ($this->type === self::BITSET) {
                     $result->data[$k] = true;
@@ -700,7 +708,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         $result = new static($this->type);
         $this->ensureSorted();
         foreach ($this->data as $k => $v) {
-            $value = $this->type === self::BITSET ? true : ($this->type === self::STRING_TO_ENTRY ? $v['value'] : $v);
+            $value = $this->type === self::BITSET
+                ? true
+                : ($this->type === self::STRING_TO_ENTRY && \is_array($v) && \array_key_exists('value', $v) ? $v['value'] : $v);
             $mapped = $transform($value, $k);
             if ($this->type === self::BITSET) {
                 if ((bool) $mapped) {
@@ -747,12 +757,13 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
         $entry = $this->data[$key];
         assert(\is_array($entry));
-        if ($entry['expires_at'] !== 0 && $entry['expires_at'] <= \time()) {
+        $expAt = \is_numeric($entry['expires_at'] ?? null) ? (int) $entry['expires_at'] : 0;
+        if ($expAt !== 0 && $expAt <= \time()) {
             return null;
         }
-        $expiresAt = (int) $entry['expires_at'];
-        $flags = (int) $entry['flags'];
-        return $entry['value'];
+        $expiresAt = $expAt;
+        $flags = \is_numeric($entry['flags'] ?? null) ? (int) $entry['flags'] : 0;
+        return $entry['value'] ?? null;
     }
 
     public function pruneExpired(?int $now = null): int
@@ -764,7 +775,8 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         $pruned = 0;
         foreach ($this->data as $k => $entry) {
             assert(\is_array($entry));
-            if ($entry['expires_at'] !== 0 && $entry['expires_at'] <= $nowTs) {
+            $expAt = \is_numeric($entry['expires_at'] ?? null) ? (int) $entry['expires_at'] : 0;
+            if ($expAt !== 0 && $expAt <= $nowTs) {
                 unset($this->data[$k]);
                 $pruned++;
             }
@@ -784,11 +796,13 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
         $entry = $this->data[$key];
         assert(\is_array($entry));
-        $isExpired = $entry['expires_at'] !== 0 && $entry['expires_at'] <= \time();
+        $expAt = \is_numeric($entry['expires_at'] ?? null) ? (int) $entry['expires_at'] : 0;
+        $flg = \is_numeric($entry['flags'] ?? null) ? (int) $entry['flags'] : 0;
+        $isExpired = $expAt !== 0 && $expAt <= \time();
         return [
-            'value' => $entry['value'],
-            'expires_at' => (int) $entry['expires_at'],
-            'flags' => (int) $entry['flags'],
+            'value' => $entry['value'] ?? null,
+            'expires_at' => $expAt,
+            'flags' => $flg,
             'is_expired' => $isExpired,
         ];
     }
@@ -804,7 +818,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
         $entry = $this->data[$key];
         assert(\is_array($entry));
-        return (int) $entry['expires_at'];
+        return \is_numeric($entry['expires_at'] ?? null) ? (int) $entry['expires_at'] : 0;
     }
 
     public function getFlags(string $key): ?int
@@ -818,7 +832,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
         $entry = $this->data[$key];
         assert(\is_array($entry));
-        return (int) $entry['flags'];
+        return \is_numeric($entry['flags'] ?? null) ? (int) $entry['flags'] : 0;
     }
 
     public function sumValues(): int|float

@@ -12,6 +12,8 @@
     "mutators": {
         "@default": true
     },
+    "testFramework": "phpunit",
+    "testFrameworkOptions": "--process-isolation",
     "minMsi": 90,
     "minCoveredMsi": 90
 }

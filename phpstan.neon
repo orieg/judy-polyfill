@@ -5,3 +5,4 @@ parameters:
     treatPhpDocTypesAsCertain: false
     ignoreErrors:
         - '#Unsafe usage of new static\(\)#'
+        - '#Method Orieg\\JudyPolyfill\\Judy::key\(\) should return int\|string but returns int\|string\|null#'
