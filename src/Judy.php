@@ -385,7 +385,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
         if ($this->type === self::STRING_TO_ENTRY) {
             $entry = $this->data[$key];
-            if ($entry['expires_at'] !== 0 && $entry['expires_at'] <= \time()) {
+            if (\is_array($entry) && isset($entry['expires_at']) && $entry['expires_at'] !== 0 && $entry['expires_at'] <= \time()) {
                 return false;
             }
         }
@@ -409,10 +409,13 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
         if ($this->type === self::STRING_TO_ENTRY) {
             $entry = $this->data[$key];
-            if ($entry['expires_at'] !== 0 && $entry['expires_at'] <= \time()) {
+            if (!\is_array($entry)) {
                 return null;
             }
-            return $entry['value'];
+            if (isset($entry['expires_at']) && $entry['expires_at'] !== 0 && $entry['expires_at'] <= \time()) {
+                return null;
+            }
+            return $entry['value'] ?? null;
         }
         return $this->data[$key];
     }
@@ -459,11 +462,13 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $this->toArray();
     }
 
+    /** @return array{type: int, data: array<int|string, mixed>} */
     public function __serialize(): array
     {
         return ['type' => $this->type, 'data' => $this->toArray()];
     }
 
+    /** @param array<string, mixed> $data */
     public function __unserialize(array $data): void
     {
         if (!isset($data['type']) || !\is_int($data['type']) || !isset($data['data']) || !\is_array($data['data'])) {
@@ -475,6 +480,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     /* ── Batch operations ─────────────────────────────────────── */
 
+    /** @return array<int|string, mixed> */
     public function toArray(mixed $start = null, mixed $end = null): array
     {
         $this->assertRangeBounds('toArray', $start, $end);
@@ -486,7 +492,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             if ($this->type === self::STRING_TO_ENTRY) {
                 $out = [];
                 foreach ($this->data as $k => $entry) {
-                    $out[$k] = $entry['value'];
+                    $out[$k] = \is_array($entry) && \array_key_exists('value', $entry) ? $entry['value'] : $entry;
                 }
                 return $out;
             }
@@ -498,12 +504,18 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
         $out = [];
         foreach ($keys as $k) {
-            $out[$k] = $this->type === self::STRING_TO_ENTRY ? $this->data[$k]['value'] : $this->data[$k];
+            $entry = $this->data[$k];
+            $out[$k] = $this->type === self::STRING_TO_ENTRY
+                ? (\is_array($entry) && \array_key_exists('value', $entry) ? $entry['value'] : $entry)
+                : $entry;
         }
         return $out;
     }
 
-    /** @param bool $optimizeIteration Accepted and ignored; see __construct(). */
+    /**
+     * @param array<int|string, mixed> $data
+     * @param bool $optimizeIteration Accepted and ignored; see __construct().
+     */
     public static function fromArray(int $type, array $data, bool $optimizeIteration = false): static
     {
         $judy = new static($type);
@@ -511,6 +523,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $judy;
     }
 
+    /** @param array<int|string, mixed> $data */
     public function putAll(array $data): void
     {
         if ($this->type === self::BITSET) {
@@ -533,6 +546,10 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         $this->sorted = false;
     }
 
+    /**
+     * @param array<int|string> $keys
+     * @return array<int|string, mixed>
+     */
     public function getAll(array $keys): array
     {
         $result = [];
@@ -543,6 +560,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $result;
     }
 
+    /** @return list<int|string> */
     public function keys(mixed $start = null, mixed $end = null): array
     {
         $this->assertRangeBounds('keys', $start, $end);
@@ -559,6 +577,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return \array_map([$this, 'keyOut'], $keys);
     }
 
+    /** @return list<mixed> */
     public function values(mixed $start = null, mixed $end = null): array
     {
         $this->assertRangeBounds('values', $start, $end);
@@ -570,7 +589,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             if ($this->type === self::STRING_TO_ENTRY) {
                 $out = [];
                 foreach ($this->data as $entry) {
-                    $out[] = $entry['value'];
+                    $out[] = \is_array($entry) && \array_key_exists('value', $entry) ? $entry['value'] : $entry;
                 }
                 return $out;
             }
@@ -582,7 +601,10 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         }
         $out = [];
         foreach ($keys as $k) {
-            $out[] = $this->type === self::STRING_TO_ENTRY ? $this->data[$k]['value'] : $this->data[$k];
+            $entry = $this->data[$k];
+            $out[] = $this->type === self::STRING_TO_ENTRY
+                ? (\is_array($entry) && \array_key_exists('value', $entry) ? $entry['value'] : $entry)
+                : $entry;
         }
         return $out;
     }
@@ -724,6 +746,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             return null;
         }
         $entry = $this->data[$key];
+        assert(\is_array($entry));
         if ($entry['expires_at'] !== 0 && $entry['expires_at'] <= \time()) {
             return null;
         }
@@ -740,6 +763,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         $nowTs = $now ?? \time();
         $pruned = 0;
         foreach ($this->data as $k => $entry) {
+            assert(\is_array($entry));
             if ($entry['expires_at'] !== 0 && $entry['expires_at'] <= $nowTs) {
                 unset($this->data[$k]);
                 $pruned++;
@@ -748,6 +772,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $pruned;
     }
 
+    /** @return array{value: mixed, expires_at: int, flags: int, is_expired: bool}|null */
     public function getEntry(string $key): ?array
     {
         if ($this->type !== self::STRING_TO_ENTRY) {
@@ -758,6 +783,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             return null;
         }
         $entry = $this->data[$key];
+        assert(\is_array($entry));
         $isExpired = $entry['expires_at'] !== 0 && $entry['expires_at'] <= \time();
         return [
             'value' => $entry['value'],
@@ -776,7 +802,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         if (!\array_key_exists($key, $this->data)) {
             return null;
         }
-        return (int) $this->data[$key]['expires_at'];
+        $entry = $this->data[$key];
+        assert(\is_array($entry));
+        return (int) $entry['expires_at'];
     }
 
     public function getFlags(string $key): ?int
@@ -788,7 +816,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         if (!\array_key_exists($key, $this->data)) {
             return null;
         }
-        return (int) $this->data[$key]['flags'];
+        $entry = $this->data[$key];
+        assert(\is_array($entry));
+        return (int) $entry['flags'];
     }
 
     public function sumValues(): int|float
