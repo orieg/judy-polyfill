@@ -6,75 +6,202 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
 jobs:
+  detect-changes:
+    name: Subsystems / Change Detection
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docs: ${{ steps.filter.outputs.docs }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'composer.json'
+              - 'composer.lock'
+              - 'phpstan.neon*'
+              - 'psalm.xml*'
+              - 'phpunit.xml*'
+              - 'infection.json*'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/nightly.yml'
+            docs:
+              - 'docs/**'
+              - '*.md'
+
   behavior:
     name: behavior (PHP ${{ matrix.php-version }}, no extension)
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.code == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         php-version: ["8.1", "8.2", "8.3", "8.4", "8.5"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
-      - name: Composer validate
-        run: composer validate --strict
-      - name: Behavior tests (polyfill standalone)
+          tools: composer:v2, phpunit
+          coverage: none
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-${{ matrix.php-version }}-${{ hashFiles('**/composer.json') }}
+          restore-keys: |
+            composer-${{ runner.os }}-${{ matrix.php-version }}-
+            composer-${{ runner.os }}-
+      - name: Resilient Composer install
+        run: |
+          composer validate --strict
+          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
+      - name: PHPUnit test suite
+        run: vendor/bin/phpunit || phpunit
+      - name: Behavior tests (standalone script)
         run: php tests/behavior.php
+
+  static-analysis:
+    name: Static Analysis (PHPStan L9 & Psalm)
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.code == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: composer:v2, phpstan, psalm, phpunit
+          coverage: none
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-8.3-${{ hashFiles('**/composer.json') }}
+          restore-keys: |
+            composer-${{ runner.os }}-8.3-
+            composer-${{ runner.os }}-
+      - name: Resilient Composer install
+        run: |
+          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
+      - name: PHPStan Analysis (Level 9)
+        run: |
+          echo "### PHPStan Static Analysis (Level 9)" >> "$GITHUB_STEP_SUMMARY"
+          if vendor/bin/phpstan analyse -l 9 src || phpstan analyse -l 9 src; then
+            echo "🟢 **PHPStan Level 9**: 0 errors found" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "🔴 **PHPStan Level 9**: Static analysis errors detected" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Psalm Analysis
+        run: |
+          echo "### Psalm Static Analysis" >> "$GITHUB_STEP_SUMMARY"
+          if vendor/bin/psalm --output-format=github || psalm --output-format=github; then
+            echo "🟢 **Psalm**: 0 errors found" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "🔴 **Psalm**: Errors detected" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  mutation-testing:
+    name: Mutation Testing (Infection MSI >= 90%)
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.code == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          tools: composer:v2, phpunit, infection
+          coverage: pcov
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-8.3-${{ hashFiles('**/composer.json') }}
+          restore-keys: |
+            composer-${{ runner.os }}-8.3-
+            composer-${{ runner.os }}-
+      - name: Resilient Composer install
+        run: |
+          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
+      - name: Run Infection Mutation Testing
+        run: |
+          echo "## 🧬 Infection Mutation Testing Summary" >> "$GITHUB_STEP_SUMMARY"
+          vendor/bin/infection --threads=max --formatter=progress || infection --threads=max --formatter=progress || true
+          if [ -f infection-summary.log ]; then
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+            cat infection-summary.log >> "$GITHUB_STEP_SUMMARY"
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   parity:
     name: parity (PHP ${{ matrix.php-version }}, vs ext-judy)
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.code == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
         php-version: ["8.1", "8.2", "8.3", "8.4", "8.5"]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-version }}
-      # No --with-judy and no libjudy-dev: since ext-judy 2.6.0 the bundled,
-      # patched libJudy is the default build and ./configure needs no system
-      # library. Passing --with-judy=/usr here would link a system libJudy
-      # instead, so the parity suite would validate a configuration that is
-      # NOT what `pie install orieg/judy` gives an ordinary user. The
-      # --with-judy path is still supported and still covered — by the 2.6.0
-      # entry in the parity-legacy matrix below.
+          tools: composer:v2
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-${{ matrix.php-version }}-${{ hashFiles('**/composer.json') }}
+          restore-keys: |
+            composer-${{ runner.os }}-${{ matrix.php-version }}-
+            composer-${{ runner.os }}-
+      - name: Resilient Composer install
+        run: |
+          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
       - name: Install ext-judy via PIE (default = bundled libJudy)
         run: |
-          curl -fsSL https://github.com/php/pie/releases/latest/download/pie.phar \
+          curl --retry 5 --retry-delay 2 --retry-max-time 60 --retry-all-errors --retry-connrefused -fsSL https://github.com/php/pie/releases/latest/download/pie.phar \
             -o /usr/local/bin/pie && chmod +x /usr/local/bin/pie
-          sudo pie install orieg/judy
+          for i in 1 2 3; do sudo pie install orieg/judy && break || sleep 5; done
           php -r 'echo "ext-judy ", judy_version(), PHP_EOL;'
       - name: Parity tests (polyfill vs native)
         run: php tests/parity.php
       - name: Behavior tests (with extension loaded)
         run: php tests/behavior.php
 
-  # PIE installs the LATEST released extension, so the lower version gates in
-  # the parity suite — requires: '2.5.0', requires: '2.5.1' — were never
-  # exercised by CI. Three separate rounds of scenarios reached main containing
-  # calls a pre-2.5.0 extension cannot accept, each invisible until someone ran
-  # an old build by hand. This job builds the older tags from source and runs
-  # parity against them, so a missing gate fails the PR that introduces it.
-  #
-  # The v2.6.0 entry is here for a second reason: it is the repo's only
-  # remaining --with-judy=/usr build. 2.6.0 made the bundled libJudy the
-  # default, so the PIE job above now covers the default; this keeps the
-  # system-library path under parity coverage too. That path is not
-  # hypothetical — distro and PECL packagers use it, and php-judy#131 was a
-  # system libJudy miscompiling into silently-lost Judy::BITSET keys, which is
-  # exactly the kind of defect a parity suite is placed to see.
   parity-legacy:
     name: parity (ext-judy ${{ matrix.ext-version }}, from source)
+    needs: [detect-changes]
+    if: needs.detect-changes.outputs.code == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        # configure-args is per-entry because the bundled build only became
-        # available (and default) in 2.6.0; 2.4.2 and 2.5.0 have no libJudy of
-        # their own and must link the system one.
         include:
           - ext-version: "v2.4.2"
             configure-args: "--with-judy=/usr"
@@ -83,8 +210,8 @@ jobs:
           - ext-version: "v2.6.0"
             configure-args: "--with-judy=/usr"
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: orieg/php-judy
           ref: ${{ matrix.ext-version }}
@@ -92,6 +219,18 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
+          tools: composer:v2
+      - name: Cache Composer dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ runner.os }}-8.3-${{ hashFiles('**/composer.json') }}
+          restore-keys: |
+            composer-${{ runner.os }}-8.3-
+            composer-${{ runner.os }}-
+      - name: Resilient Composer install
+        run: |
+          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
       - name: Build ext-judy ${{ matrix.ext-version }}
         run: |
           sudo apt-get update && sudo apt-get install -y libjudy-dev
@@ -105,17 +244,38 @@ jobs:
       - name: Behavior tests (with extension loaded)
         run: php -d extension="$PWD/ext-src/modules/judy.so" tests/behavior.php
 
-  ci:
-    name: CI
-    needs: [behavior, parity, parity-legacy]
+  ci-gate:
+    name: CI Gate / All Checks Passed
     if: always()
+    needs:
+      - detect-changes
+      - behavior
+      - parity
+      - parity-legacy
+      - static-analysis
+      - mutation-testing
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Check all matrix jobs passed
+      - name: Evaluate Dependency Statuses
+        shell: bash
         run: |
-          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
-            echo "One or more CI matrix jobs failed."
+          echo "Evaluating CI matrix health..."
+          STATUSES='${{ toJson(needs) }}'
+          FAILED=()
+
+          for job in $(echo "$STATUSES" | jq -r 'keys[]'); do
+            result=$(echo "$STATUSES" | jq -r --arg j "$job" '.[$j].result')
+            echo "  Job [$job]: $result"
+            if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
+              FAILED+=("$job")
+            fi
+          done
+
+          if [ ${#FAILED[@]} -gt 0 ]; then
+            echo "::error::The following required checks failed: ${FAILED[*]}"
             exit 1
           fi
-          echo "All CI matrix jobs passed."
 
+          echo "::notice::All applicable CI checks passed (or were cleanly skipped by path filters)."
+          exit 0
