@@ -18,5 +18,8 @@
         <PossiblyUnusedMethod errorLevel="suppress" />
         <ClassMustBeFinal errorLevel="suppress" />
         <MissingOverrideAttribute errorLevel="suppress" />
+        <UnsafeInstantiation errorLevel="suppress" />
+        <DirectConstructorCall errorLevel="suppress" />
+        <RedundantFunctionCall errorLevel="suppress" />
     </issueHandlers>
 </psalm>

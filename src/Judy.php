@@ -995,7 +995,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     private function coerceValue(mixed $value): mixed
     {
         if (\in_array($this->type, self::INT_VALUED, true)) {
-            return \is_numeric($value) ? (int) $value : 0;
+            return \is_scalar($value) ? (int) $value : 0;
         }
         return $value;
     }
