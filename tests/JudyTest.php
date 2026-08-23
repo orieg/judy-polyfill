@@ -7,12 +7,6 @@ use Orieg\JudyPolyfill\Judy;
 
 class JudyTest extends TestCase
 {
-    protected function setUp(): void
-    {
-        require_once __DIR__ . '/../src/Judy.php';
-        require_once __DIR__ . '/../src/bootstrap.php';
-    }
-
     public function testConstructValidTypes(): void
     {
         for ($t = Judy::BITSET; $t <= Judy::STRING_TO_ENTRY; $t++) {
@@ -26,18 +20,32 @@ class JudyTest extends TestCase
         }
     }
 
-    public function testConstructInvalidTypeHigh(): void
+    public function testOptimizeIterationDefault(): void
+    {
+        $ref = new \ReflectionMethod(Judy::class, '__construct');
+        $params = $ref->getParameters();
+        $this->assertSame('optimizeIteration', $params[1]->getName());
+        $this->assertFalse($params[1]->getDefaultValue());
+    }
+
+    public function testConstructBoundaries(): void
+    {
+        $min = new Judy(Judy::BITSET);
+        $this->assertSame(Judy::BITSET, $min->getType());
+
+        $max = new Judy(Judy::STRING_TO_ENTRY);
+        $this->assertSame(Judy::STRING_TO_ENTRY, $max->getType());
+
+        $this->expectException(\Exception::class);
+        $this->expectExceptionMessage('Not a valid Judy type');
+        new Judy(Judy::BITSET - 1);
+    }
+
+    public function testConstructAboveMax(): void
     {
         $this->expectException(\Exception::class);
         $this->expectExceptionMessage('Not a valid Judy type');
         new Judy(Judy::STRING_TO_ENTRY + 1);
-    }
-
-    public function testConstructInvalidTypeLow(): void
-    {
-        $this->expectException(\Exception::class);
-        $this->expectExceptionMessage('Not a valid Judy type');
-        new Judy(Judy::BITSET - 1);
     }
 
     public function testDestruct(): void
@@ -46,6 +54,21 @@ class JudyTest extends TestCase
         $j[1] = 10;
         unset($j);
         $this->assertTrue(true);
+    }
+
+    public function testGetTypeAndIsIterationOptimizedReflection(): void
+    {
+        $j = new Judy(Judy::INT_TO_INT);
+        $this->assertSame(Judy::INT_TO_INT, $j->getType());
+        $this->assertFalse($j->isIterationOptimized());
+
+        $refType = new \ReflectionMethod(Judy::class, 'getType');
+        $this->assertTrue($refType->isPublic());
+        $this->assertSame('int', (string) $refType->getReturnType());
+
+        $refOpt = new \ReflectionMethod(Judy::class, 'isIterationOptimized');
+        $this->assertTrue($refOpt->isPublic());
+        $this->assertSame('bool', (string) $refOpt->getReturnType());
     }
 
     public function testIntToIntOperations(): void
@@ -122,6 +145,35 @@ class JudyTest extends TestCase
         $this->assertCount(0, $j);
         $this->assertSame(0, $j->memoryUsage());
         $this->assertNull($j->averageValues());
+    }
+
+    public function testFreeAndMemoryUsageEstimates(): void
+    {
+        $j = new Judy(Judy::INT_TO_INT);
+        $this->assertSame(0, $j->memoryUsage());
+        $this->assertSame(0, $j->free());
+
+        $j[1] = 10;
+        $this->assertSame(40 + 9, $j->memoryUsage());
+        $this->assertSame(49, $j->free());
+        $this->assertSame(0, $j->memoryUsage());
+
+        $sMixed = new Judy(Judy::STRING_TO_MIXED);
+        $this->assertSame(0, $sMixed->memoryUsage());
+        $sMixed['a'] = 'test';
+        $this->assertSame(1 + \PHP_INT_SIZE + 16, $sMixed->memoryUsage());
+
+        $sHash = new Judy(Judy::STRING_TO_INT_HASH);
+        $sHash['a'] = 100;
+        $this->assertSame(2 + \PHP_INT_SIZE, $sHash->memoryUsage());
+
+        $sMixedHash = new Judy(Judy::STRING_TO_MIXED_HASH);
+        $sMixedHash['a'] = 'test';
+        $this->assertSame(2 + \PHP_INT_SIZE + 16, $sMixedHash->memoryUsage());
+
+        $sEntry = new Judy(Judy::STRING_TO_ENTRY);
+        $sEntry->set('a', 'test');
+        $this->assertSame(1 + \PHP_INT_SIZE + 24, $sEntry->memoryUsage());
     }
 
     public function testBitsetSemantics(): void
@@ -524,5 +576,15 @@ class JudyTest extends TestCase
         $this->assertSame(["\x7f", "\x80", "\xff"], $keys);
         $this->assertSame("\x7f", $hi->first());
         $this->assertSame("\xff", $hi->last());
+    }
+
+    public function testFromArrayWithOptimizeIteration(): void
+    {
+        $j = Judy::fromArray(Judy::INT_TO_INT, [1 => 10], true);
+        $this->assertSame([1 => 10], $j->toArray());
+
+        $ref = new \ReflectionMethod(Judy::class, 'fromArray');
+        $params = $ref->getParameters();
+        $this->assertFalse($params[2]->getDefaultValue());
     }
 }

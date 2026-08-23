@@ -3,4 +3,5 @@ parameters:
     paths:
         - src
     treatPhpDocTypesAsCertain: false
-    checkUnsafeStaticMethodCalls: false
+    ignoreErrors:
+        - '#Unsafe usage of new static\(\)#'
