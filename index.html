@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>judy-polyfill — Pure-PHP Drop-In Polyfill for PHP Judy Arrays</title>
+  <meta name="description" content="Official documentation for judy-polyfill. Pure-PHP implementation of the Judy extension with 100% API parity and 1,700+ verified assertions.">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="judy-polyfill — Pure-PHP Drop-In Polyfill for PHP Judy Arrays">
+  <meta property="og:description" content="Pure-PHP implementation of the Judy extension with 100% API parity for zero-extension environments.">
+  <meta property="og:url" content="https://orieg.github.io/judy-polyfill/">
+  <meta property="og:site_name" content="judy-polyfill">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="judy-polyfill — Pure-PHP Drop-In Polyfill for PHP Judy Arrays">
+  <meta name="twitter:description" content="Pure-PHP implementation of the Judy extension with 100% API parity for zero-extension environments.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x2728;</text></svg>">
+
+  <script>
+    (function() {
+      const saved = localStorage.getItem('judy-polyfill-theme');
+      const attr = document.documentElement.getAttribute('data-theme');
+      if (saved) {
+        document.documentElement.setAttribute('data-theme', saved);
+      } else if (!attr) {
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+          document.documentElement.setAttribute('data-theme', 'light');
+        } else {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      }
+    })();
+  </script>
+
+  <style>
+    :root {
+      --bg: #090d16;
+      --card-bg: #111827;
+      --card-inner: #0b1120;
+      --border: #1f293d;
+      --border-accent: rgba(56, 189, 248, 0.4);
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --heading: #f8fafc;
+      --accent: #a855f7;
+      --accent-hover: #c084fc;
+      --accent-cyan: #38bdf8;
+      --accent-green: #10b981;
+      --accent-orange: #f59e0b;
+      --code-bg: #030712;
+      --navbar-bg: rgba(9, 13, 22, 0.85);
+      --nav-pill-bg: rgba(168, 85, 247, 0.1);
+      --nav-pill-border: rgba(168, 85, 247, 0.25);
+      --btn-secondary-bg: #111827;
+      --btn-secondary-hover: #1e293b;
+      --btn-secondary-border: #1f293d;
+      --btn-secondary-text: #f8fafc;
+      --spotlight-bg: linear-gradient(135deg, #0f172a 0%, #2e1065 50%, #0f172a 100%);
+      --spotlight-border: rgba(168, 85, 247, 0.4);
+      color-scheme: dark;
+    }
+
+    [data-theme="light"] {
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --card-inner: #f1f5f9;
+      --border: #e2e8f0;
+      --border-accent: rgba(147, 51, 234, 0.4);
+      --text: #334155;
+      --text-muted: #64748b;
+      --heading: #0f172a;
+      --accent: #9333ea;
+      --accent-hover: #7e22ce;
+      --accent-cyan: #0284c7;
+      --accent-green: #059669;
+      --accent-orange: #d97706;
+      --code-bg: #0f172a;
+      --navbar-bg: rgba(248, 250, 252, 0.88);
+      --nav-pill-bg: rgba(147, 51, 234, 0.08);
+      --nav-pill-border: rgba(147, 51, 234, 0.25);
+      --btn-secondary-bg: #ffffff;
+      --btn-secondary-hover: #f1f5f9;
+      --btn-secondary-border: #cbd5e1;
+      --btn-secondary-text: #0f172a;
+      --spotlight-bg: linear-gradient(135deg, #faf5ff 0%, #f3e8ff 50%, #f0fdf4 100%);
+      --spotlight-border: rgba(147, 51, 234, 0.3);
+      color-scheme: light;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+      -webkit-font-smoothing: antialiased;
+      transition: background-color 0.2s ease, color 0.2s ease;
+    }
+
+    a { color: var(--accent); text-decoration: none; transition: color 0.15s ease; }
+    a:hover { color: var(--accent-hover); }
+
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 1.5rem;
+    }
+
+    /* Navbar */
+    .navbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--navbar-bg);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0.75rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1.5rem;
+    }
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-weight: 700;
+      font-size: 1.15rem;
+      color: var(--heading);
+      text-decoration: none;
+    }
+    .nav-logo {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, #a855f7, #38bdf8);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      font-weight: 900;
+      font-size: 15px;
+      box-shadow: 0 2px 8px rgba(168, 85, 247, 0.25);
+    }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      list-style: none;
+    }
+    .nav-links a {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.15s ease;
+    }
+    .nav-links a:hover {
+      color: var(--heading);
+      text-decoration: none;
+    }
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .theme-toggle-btn {
+      background: var(--btn-secondary-bg);
+      border: 1px solid var(--btn-secondary-border);
+      color: var(--text);
+      cursor: pointer;
+      padding: 0.4rem 0.6rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+    }
+    .theme-toggle-btn:hover {
+      background: var(--btn-secondary-hover);
+      border-color: var(--border-accent);
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 1.25rem;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.15s ease;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #9333ea, #7e22ce);
+      color: #ffffff;
+      box-shadow: 0 4px 14px rgba(147, 51, 234, 0.35);
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #a855f7, #9333ea);
+      color: #ffffff;
+      transform: translateY(-1px);
+    }
+    .btn-secondary {
+      background: var(--btn-secondary-bg);
+      border: 1px solid var(--btn-secondary-border);
+      color: var(--btn-secondary-text);
+    }
+    .btn-secondary:hover {
+      background: var(--btn-secondary-hover);
+      border-color: var(--border-accent);
+      color: var(--heading);
+      text-decoration: none;
+      transform: translateY(-1px);
+    }
+
+    /* Hero */
+    .hero {
+      padding: 4.5rem 0 3rem;
+      text-align: center;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--nav-pill-bg);
+      color: var(--accent);
+      border: 1px solid var(--nav-pill-border);
+      padding: 0.3rem 0.85rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      margin-bottom: 1.25rem;
+    }
+    .hero h1 {
+      font-size: 2.75rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: var(--heading);
+      margin-bottom: 1rem;
+      line-height: 1.15;
+    }
+    .hero-gradient {
+      background: linear-gradient(135deg, #a855f7 0%, #38bdf8 50%, #34d399 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero .subtitle {
+      color: var(--text-muted);
+      font-size: 1.2rem;
+      max-width: 700px;
+      margin: 0 auto 1.75rem;
+    }
+    .install-box {
+      max-width: 500px;
+      margin: 0 auto 2rem;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 0.6rem 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    }
+    .install-cmd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.9rem;
+      color: var(--accent);
+    }
+    .copy-btn {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      cursor: pointer;
+      padding: 0.35rem 0.6rem;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      transition: all 0.15s ease;
+    }
+    .copy-btn:hover {
+      color: var(--heading);
+      border-color: var(--accent);
+    }
+
+    /* Section styling */
+    .section-block {
+      margin-bottom: 4rem;
+    }
+    .section-title {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 700;
+      color: var(--accent);
+      margin-bottom: 0.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .section-title::after {
+      content: "";
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    .section-desc {
+      font-size: 1.05rem;
+      color: var(--text-muted);
+      margin-bottom: 1.75rem;
+    }
+
+    /* Feature Grid */
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+    .feature-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      transition: all 0.2s ease;
+    }
+    .feature-card:hover {
+      border-color: var(--border-accent);
+      transform: translateY(-2px);
+    }
+    .feature-icon {
+      font-size: 1.5rem;
+      margin-bottom: 0.75rem;
+    }
+    .feature-card h3 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: var(--heading);
+      margin-bottom: 0.5rem;
+    }
+    .feature-card p {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    /* Code Blocks */
+    .code-tabs {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 2rem;
+    }
+    .code-nav {
+      display: flex;
+      background: var(--card-inner);
+      border-bottom: 1px solid var(--border);
+      padding: 0.4rem 0.5rem;
+      gap: 0.4rem;
+      overflow-x: auto;
+    }
+    .code-tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      padding: 0.5rem 0.85rem;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    .code-tab-btn:hover {
+      color: var(--heading);
+    }
+    .code-tab-btn.active {
+      background: var(--nav-pill-bg);
+      color: var(--accent);
+    }
+    .code-pane {
+      display: none;
+      position: relative;
+    }
+    .code-pane.active {
+      display: block;
+    }
+    pre {
+      background: var(--code-bg);
+      color: var(--text);
+      padding: 1.25rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      overflow-x: auto;
+    }
+    .keyword { color: #f472b6; }
+    .class-name { color: #38bdf8; }
+    .method { color: #60a5fa; }
+    .string { color: #34d399; }
+    .number { color: #fbbf24; }
+    .comment { color: #64748b; font-style: italic; }
+
+    /* Parity Table */
+    .parity-table-wrap {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow-x: auto;
+      margin-bottom: 2rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.88rem;
+    }
+    th, td {
+      padding: 0.85rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      background: var(--card-inner);
+      color: var(--heading);
+      font-weight: 700;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    tr:last-child td {
+      border-bottom: none;
+    }
+    .check {
+      color: var(--accent-green);
+      font-weight: bold;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 3.5rem 0 2rem;
+      background: var(--navbar-bg);
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 1.5rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+    .footer-links a {
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .footer-links a:hover {
+      color: var(--heading);
+    }
+
+    @media (max-width: 768px) {
+      .hero h1 { font-size: 2.1rem; }
+      .navbar { padding: 0.75rem 1rem; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<nav class="navbar">
+  <a href="https://orieg.github.io/judy-polyfill/" class="nav-brand">
+    <div class="nav-logo">&#x2728;</div>
+    <span>judy-polyfill</span>
+  </a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#examples">Code Showcase</a></li>
+    <li><a href="#parity">Parity Matrix</a></li>
+    <li><a href="#install">Install</a></li>
+  </ul>
+  <div class="nav-actions">
+    <button class="theme-toggle-btn" id="themeToggle" aria-label="Toggle theme" title="Toggle dark/light mode">
+      <span id="themeIcon">🌓</span>
+    </button>
+    <a class="btn btn-secondary" href="https://github.com/orieg/judy-polyfill" target="_blank" rel="noopener">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      <span>GitHub</span>
+    </a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="container">
+    <div class="hero-badge">
+      <span>Release v2.7.0 Live</span> &bull; <span>100% ext-judy Parity</span>
+    </div>
+    <h1>Pure-PHP Drop-In Polyfill <br><span class="hero-gradient">For PHP Judy Arrays</span></h1>
+    <p class="subtitle">Complete API compatibility, 1,700+ verified differential assertions, and zero C extensions required. Seamless fallback for PHP 8.1+.</p>
+    
+    <div class="install-box">
+      <span class="install-cmd" id="installText">composer require orieg/judy-polyfill</span>
+      <button class="copy-btn" onclick="navigator.clipboard.writeText('composer require orieg/judy-polyfill'); this.textContent='Copied!'; setTimeout(()=>this.textContent='Copy', 2000)">Copy</button>
+    </div>
+
+    <div style="display: flex; justify-content: center; gap: 0.85rem; flex-wrap: wrap;">
+      <a class="btn btn-primary" href="#examples">Interactive Guide &rarr;</a>
+      <a class="btn btn-secondary" href="#parity">Parity Matrix</a>
+      <a class="btn btn-secondary" href="https://orieg.github.io/php-judy/">Native C Extension</a>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- Feature Grid -->
+  <section class="section-block" id="features">
+    <div class="section-title">Core Capabilities</div>
+    <p class="section-desc">Designed to allow libraries and applications to use Judy data structures everywhere without compilation barriers.</p>
+
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f4af;</div>
+        <h3>100% API Parity</h3>
+        <p>Full implementation of all 11 Judy types (including <code style="color: var(--accent);">Judy::STRING_TO_ENTRY</code>), exact method signatures, error messages, and exception types.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f50d;</div>
+        <h3>1,700+ Verified Assertions</h3>
+        <p>Tested continuously in CI against native <code style="color: var(--accent-cyan);">ext-judy</code> across PHP 8.1, 8.2, 8.3, 8.4, and 8.5 with <strong>0 divergences</strong>.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f512;</div>
+        <h3>Native TTL Cache Support</h3>
+        <p>Implements all v2.7.0 cache methods: <code style="color: var(--accent-green);">set()</code>, <code style="color: var(--accent-green);">get()</code>, <code style="color: var(--accent-green);">pruneExpired()</code>, <code style="color: var(--accent-green);">getEntry()</code>, <code style="color: var(--accent-green);">getExpiry()</code>, and <code style="color: var(--accent-green);">getFlags()</code>.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f4e6;</div>
+        <h3>Zero Dependencies</h3>
+        <p>Lightweight single-class implementation with zero external packages. Requires only standard <code style="color: var(--accent);">php &gt;= 8.1</code>.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f504;</div>
+        <h3>Transparent Fallback</h3>
+        <p>Auto-loads only when <code style="color: var(--accent-cyan);">ext-judy</code> is absent. When the C extension is installed, the native module executes with zero polyfill overhead.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">&#x1f500;</div>
+        <h3>Dual-Mode Library Friendly</h3>
+        <p>Libraries can depend on <code style="color: var(--accent);">orieg/judy-polyfill</code> in <code style="color: var(--accent);">require</code> and suggest <code style="color: var(--accent-cyan);">ext-judy</code> for production speedups.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Interactive Code Showcase -->
+  <section class="section-block" id="examples">
+    <div class="section-title">Code Showcase</div>
+    <p class="section-desc">Code patterns demonstrating pure-PHP execution matching ext-judy exact behavior.</p>
+
+    <div class="code-tabs">
+      <div class="code-nav" id="codeNav">
+        <button class="code-tab-btn active" data-target="code-basic">Drop-in Usage</button>
+        <button class="code-tab-btn" data-target="code-cache">Cache & TTL (STRING_TO_ENTRY)</button>
+        <button class="code-tab-btn" data-target="code-bulk">Bulk Ops & Navigation</button>
+        <button class="code-tab-btn" data-target="code-composer">Dual-Mode composer.json</button>
+      </div>
+
+      <!-- Tab 1: Basic -->
+      <div class="code-pane active" id="code-basic">
+<pre><code><span class="keyword">&lt;?php</span>
+<span class="comment">// Works identically whether ext-judy is installed or not</span>
+<span class="variable">$judy</span> = <span class="keyword">new</span> <span class="class-name">Judy</span>(<span class="class-name">Judy</span>::<span class="keyword">INT_TO_MIXED</span>);
+
+<span class="variable">$judy</span>[<span class="number">101</span>] = [<span class="string">'id'</span> =&gt; <span class="number">101</span>, <span class="string">'status'</span> =&gt; <span class="string">'active'</span>];
+<span class="variable">$judy</span>[<span class="number">202</span>] = [<span class="string">'id'</span> =&gt; <span class="number">202</span>, <span class="string">'status'</span> =&gt; <span class="string">'pending'</span>];
+
+<span class="keyword">isset</span>(<span class="variable">$judy</span>[<span class="number">101</span>]); <span class="comment">// true</span>
+<span class="keyword">count</span>(<span class="variable">$judy</span>);     <span class="comment">// 2</span>
+
+<span class="comment">// Exact Iterator traversal</span>
+<span class="keyword">foreach</span> (<span class="variable">$judy</span> <span class="keyword">as</span> <span class="variable">$k</span> =&gt; <span class="variable">$v</span>) {
+    <span class="method">var_dump</span>(<span class="variable">$k</span>, <span class="variable">$v</span>);
+}</code></pre>
+      </div>
+
+      <!-- Tab 2: Cache -->
+      <div class="code-pane" id="code-cache">
+<pre><code><span class="keyword">&lt;?php</span>
+<span class="comment">// Compound cache entry type support (v2.7.0)</span>
+<span class="variable">$cache</span> = <span class="keyword">new</span> <span class="class-name">Judy</span>(<span class="class-name">Judy</span>::<span class="keyword">STRING_TO_ENTRY</span>);
+
+<span class="comment">// Store entry with TTL seconds and 16-bit metadata flags</span>
+<span class="variable">$cache</span>-&gt;<span class="method">set</span>(<span class="string">'token:xyz'</span>, <span class="string">'user_session_payload'</span>, <span class="variable">$ttl</span> = <span class="number">300</span>, <span class="variable">$flags</span> = <span class="number">0x0002</span>);
+
+<span class="comment">// Read back value and inspect metadata</span>
+<span class="variable">$val</span> = <span class="variable">$cache</span>-&gt;<span class="method">get</span>(<span class="string">'token:xyz'</span>, <span class="variable">$expiresAt</span>, <span class="variable">$flags</span>);
+
+<span class="comment">// Evict expired items</span>
+<span class="variable">$evictedCount</span> = <span class="variable">$cache</span>-&gt;<span class="method">pruneExpired</span>();</code></pre>
+      </div>
+
+      <!-- Tab 3: Bulk -->
+      <div class="code-pane" id="code-bulk">
+<pre><code><span class="keyword">&lt;?php</span>
+<span class="variable">$data</span> = [<span class="string">'alpha'</span> =&gt; <span class="number">1</span>, <span class="string">'beta'</span> =&gt; <span class="number">2</span>, <span class="string">'gamma'</span> =&gt; <span class="number">3</span>];
+<span class="variable">$j</span> = <span class="class-name">Judy</span>::<span class="method">fromArray</span>(<span class="class-name">Judy</span>::<span class="keyword">STRING_TO_INT</span>, <span class="variable">$data</span>);
+
+<span class="comment">// Ordered seeks</span>
+<span class="variable">$first</span> = <span class="variable">$j</span>-&gt;<span class="method">first</span>();            <span class="comment">// "alpha"</span>
+<span class="variable">$next</span>  = <span class="variable">$j</span>-&gt;<span class="method">searchNext</span>(<span class="variable">$first</span>);   <span class="comment">// "beta"</span>
+
+<span class="comment">// Range extraction</span>
+<span class="variable">$slice</span> = <span class="variable">$j</span>-&gt;<span class="method">keys</span>(<span class="string">'alpha'</span>, <span class="string">'beta'</span>); <span class="comment">// ['alpha', 'beta']</span></code></pre>
+      </div>
+
+      <!-- Tab 4: Composer -->
+      <div class="code-pane" id="code-composer">
+<pre><code>{
+    <span class="string">"name"</span>: <span class="string">"your-org/your-package"</span>,
+    <span class="string">"require"</span>: {
+        <span class="string">"php"</span>: <span class="string">"&gt;=8.1"</span>,
+        <span class="string">"orieg/judy-polyfill"</span>: <span class="string">"^2.7.0"</span>
+    },
+    <span class="string">"suggest"</span>: {
+        <span class="string">"ext-judy"</span>: <span class="string">"Native C extension for maximum throughput (pie install orieg/judy)"</span>
+    }
+}</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Parity Matrix -->
+  <section class="section-block" id="parity">
+    <div class="section-title">Parity & Compatibility Matrix</div>
+    <p class="section-desc">Every method and edge case is checked against ext-judy in automated differential tests.</p>
+
+    <div class="parity-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>API Feature / Method</th>
+            <th>ext-judy (C)</th>
+            <th>judy-polyfill (Pure PHP)</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>All 11 Type Constants</strong> (BITSET .. STRING_TO_ENTRY)</td>
+            <td>100%</td>
+            <td>100%</td>
+            <td class="check">&#x2714; Full Parity</td>
+          </tr>
+          <tr>
+            <td><strong>ArrayAccess</strong> (offsetGet, offsetSet, offsetExists, offsetUnset)</td>
+            <td>Strict Type-Check</td>
+            <td>Strict Type-Check</td>
+            <td class="check">&#x2714; Full Parity</td>
+          </tr>
+          <tr>
+            <td><strong>Range Navigation</strong> (first, last, searchNext, prev)</td>
+            <td>Lexicographic / Unsigned</td>
+            <td>Lexicographic / Unsigned</td>
+            <td class="check">&#x2714; Full Parity</td>
+          </tr>
+          <tr>
+            <td><strong>TTL Cache Methods</strong> (set, get, pruneExpired, getEntry, getExpiry, getFlags)</td>
+            <td>Native in C</td>
+            <td>Native in PHP</td>
+            <td class="check">&#x2714; Full Parity</td>
+          </tr>
+          <tr>
+            <td><strong>Bulk APIs</strong> (fromArray, toArray, putAll, getAll, keys, values, size)</td>
+            <td>Single-Pass C</td>
+            <td>Single-Pass PHP</td>
+            <td class="check">&#x2714; Full Parity</td>
+          </tr>
+          <tr>
+            <td><strong>Exception Messages & Types</strong> (Embedded NUL, TypeErrors)</td>
+            <td>Exact Message</td>
+            <td>Exact Message</td>
+            <td class="check">&#x2714; Full Parity</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Installation -->
+  <section class="section-block" id="install">
+    <div class="section-title">Installation</div>
+    <p class="section-desc">Install via Composer in any PHP 8.1+ project.</p>
+
+    <div style="background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem;">
+      <h4 style="font-size: 1rem; color: var(--heading); margin-bottom: 0.75rem;">Composer Setup</h4>
+      <pre style="border-radius: 8px; margin-bottom: 1rem;"><code>composer require orieg/judy-polyfill</code></pre>
+      <p style="font-size: 0.85rem; color: var(--text-muted);">The polyfill registers the <code style="color: var(--accent);">Judy</code> class automatically via Composer autoloading whenever <code style="color: var(--accent-cyan);">ext-judy</code> is not loaded.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/orieg/judy-polyfill" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://orieg.github.io/php-judy/">PHP Judy Extension</a>
+      <a href="https://orieg.github.io/judy-cache/">Judy Cache</a>
+      <a href="https://orieg.github.io/expanse/">Expanse Engine</a>
+      <a href="https://orieg.github.io/">Nicolas Brousse</a>
+    </div>
+    <p>&copy; 2026 Nicolas Brousse. Released under the MIT License.</p>
+  </div>
+</footer>
+
+<script>
+  // Theme toggle
+  const themeToggle = document.getElementById('themeToggle');
+  const themeIcon = document.getElementById('themeIcon');
+
+  function updateThemeIcon(theme) {
+    themeIcon.textContent = theme === 'light' ? '☀️' : '🌙';
+  }
+
+  const currentTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+  updateThemeIcon(currentTheme);
+
+  themeToggle.addEventListener('click', () => {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    const nextTheme = isDark ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', nextTheme);
+    localStorage.setItem('judy-polyfill-theme', nextTheme);
+    updateThemeIcon(nextTheme);
+  });
+
+  // Code showcase tabs
+  const codeButtons = document.querySelectorAll('#codeNav .code-tab-btn');
+  codeButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      codeButtons.forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.code-pane').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      const targetId = btn.getAttribute('data-target');
+      document.getElementById(targetId).classList.add('active');
+    });
+  });
+</script>
+
+</body>
+</html>
