@@ -737,11 +737,11 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
             throw new \TypeError('Judy::set() is only supported for STRING_TO_ENTRY arrays');
         }
         $this->assertKeyBytes($key);
-        $expiresAt = $ttl !== 0 ? (int) (\time() + $ttl) : 0;
+        $expiresAt = $ttl !== 0 ? \time() + $ttl : 0;
         $this->data[$key] = [
             'value' => $value,
             'expires_at' => $expiresAt,
-            'flags' => (int) $flags,
+            'flags' => $flags,
         ];
         $this->sorted = false;
     }
@@ -857,7 +857,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         if (!\in_array($this->type, self::INT_VALUED, true)) {
             throw new \Exception('averageValues() is only supported for integer-valued Judy types');
         }
-        return \array_sum($this->data) / \count($this->data);
+        return ((float) \array_sum($this->data)) / ((float) \count($this->data));
     }
 
     public function populationCount(mixed $start = 0, mixed $end = -1): int
