@@ -9,6 +9,10 @@ namespace Orieg\JudyPolyfill;
  * API-compatible with ext-judy 2.7; backed by a native PHP array, so it
  * provides compatibility, not the extension's memory/performance profile.
  * Behavioral notes and known divergences are documented in the README.
+ *
+ * @implements \ArrayAccess<int|string, mixed>
+ * @implements \Iterator<int|string, mixed>
+ * @phpstan-consistent-constructor
  */
 class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 {
@@ -84,6 +88,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
      */
     public function __construct(int $type, bool $optimizeIteration = false)
     {
+        unset($optimizeIteration);
         if ($type < self::BITSET || $type > self::STRING_TO_ENTRY) {
             throw new \Exception('Judy::__construct(): Not a valid Judy type. Please check the documentation for valid Judy type constant.');
         }
@@ -165,6 +170,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         if (!$this->intKeyed()) {
             return null;
         }
+        if (!\is_int($nth_index) && !\is_numeric($nth_index)) {
+            return null;
+        }
         $n = (int) $nth_index;
         if ($n < 1 || $n > \count($this->data)) {
             return null;
@@ -198,30 +206,34 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     public function firstEmpty(mixed $index = null): mixed
     {
         $this->assertIntArg($index, __FUNCTION__, nullable: true);
-        return $this->seekEmpty($index === null ? 0 : (int) $index, forward: true);
+        assert(\is_int($index) || $index === null);
+        return $this->seekEmpty($index === null ? 0 : $index, forward: true);
     }
 
     public function nextEmpty(mixed $index): mixed
     {
         $this->assertIntArg($index, __FUNCTION__, nullable: false);
+        assert(\is_int($index));
         // Exclusive: step one key up in unsigned order first, and there is
         // nothing above -1 to step to.
-        return $this->seekEmpty(self::unsignedSucc((int) $index), forward: true);
+        return $this->seekEmpty(self::unsignedSucc($index), forward: true);
     }
 
     public function lastEmpty(mixed $index = null): mixed
     {
         $this->assertIntArg($index, __FUNCTION__, nullable: true);
+        assert(\is_int($index) || $index === null);
         // Native scans down from the unsigned word max, which reads back as
         // -1 in PHP; mirror that by starting at -1 and decrementing.
-        return $this->seekEmpty($index === null ? -1 : (int) $index, forward: false);
+        return $this->seekEmpty($index === null ? -1 : $index, forward: false);
     }
 
     public function prevEmpty(mixed $index): mixed
     {
         $this->assertIntArg($index, __FUNCTION__, nullable: false);
+        assert(\is_int($index));
         // Exclusive: step one key down in unsigned order, nothing below 0.
-        return $this->seekEmpty(self::unsignedPred((int) $index), forward: false);
+        return $this->seekEmpty(self::unsignedPred($index), forward: false);
     }
 
     /* ── Set operations ───────────────────────────────────────── */
