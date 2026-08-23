@@ -238,7 +238,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
 
     /* ── Set operations ───────────────────────────────────────── */
 
-    public function union(Judy|\Judy $other): static
+    public function union(Judy $other): static
     {
         $this->assertSameType($other);
         $result = new static($this->type);
@@ -250,7 +250,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $result;
     }
 
-    public function intersect(Judy|\Judy $other): static
+    public function intersect(Judy $other): static
     {
         $this->assertSameType($other);
         $result = new static($this->type);
@@ -264,7 +264,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $result;
     }
 
-    public function diff(Judy|\Judy $other): static
+    public function diff(Judy $other): static
     {
         $this->assertSameType($other);
         $result = new static($this->type);
@@ -278,7 +278,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $result;
     }
 
-    public function xor(Judy|\Judy $other): static
+    public function xor(Judy $other): static
     {
         $this->assertSameType($other);
         $result = new static($this->type);
@@ -297,7 +297,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $result;
     }
 
-    public function mergeWith(Judy|\Judy $other): void
+    public function mergeWith(Judy $other): void
     {
         $thisCat = $this->intKeyed() ? 'integer' : 'string';
         $otherCat = \in_array($other->getType(), self::INT_KEYED, true) ? 'integer' : 'string';
@@ -345,7 +345,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $result;
     }
 
-    public function equals(Judy|\Judy $other): bool
+    public function equals(Judy $other): bool
     {
         if ($this->type !== $other->getType() || \count($this->data) !== $other->count()) {
             return false;
@@ -1207,7 +1207,7 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
         return $out;
     }
 
-    private function assertSameType(Judy|\Judy $other): void
+    private function assertSameType(Judy $other): void
     {
         if ($this->type !== $other->getType()) {
             throw new \Exception('Both Judy arrays must be the same type for set operations');
@@ -1218,12 +1218,11 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     }
 
     /**
-     * Entries of a polyfill or native instance as key => value
-     * (BITSET: index => true), so mixed usage works when ext-judy is loaded.
+     * Entries of a polyfill instance as key => value
      *
      * @return array<int|string, mixed>
      */
-    private function entriesOf(self|\Judy $other): array
+    private function entriesOf(Judy $other): array
     {
         return $other->data;
     }

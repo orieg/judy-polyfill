@@ -19,9 +19,8 @@ if (!function_exists('judy_version')) {
 if (!function_exists('judy_type')) {
     function judy_type(mixed $array): int
     {
-        if (is_object($array) && ($array instanceof \Orieg\JudyPolyfill\Judy || is_a($array, 'Judy'))) {
-            /** @var \Orieg\JudyPolyfill\Judy $array */
-            return $array->getType();
+        if (is_object($array) && method_exists($array, 'getType')) {
+            return (int) $array->getType();
         }
         return -1;
     }
