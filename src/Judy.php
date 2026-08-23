@@ -939,9 +939,9 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     private function coerceKey(mixed $offset): int|string
     {
         if ($this->intKeyed()) {
-            return \is_numeric($offset) ? (int) $offset : 0;
+            return \is_scalar($offset) ? (int) $offset : 0;
         }
-        $key = \is_string($offset) ? $offset : (string) $offset;
+        $key = \is_string($offset) ? $offset : (\is_scalar($offset) ? (string) $offset : '');
         $this->assertKeyBytes($key);
         return $key;
     }
@@ -1046,9 +1046,10 @@ class Judy implements \ArrayAccess, \Countable, \Iterator, \JsonSerializable
     private function cmpKeys(int|string $a, mixed $b): int
     {
         if ($this->intKeyed()) {
-            return self::cmpUnsigned((int) $a, \is_numeric($b) ? (int) $b : 0);
+            return self::cmpUnsigned((int) $a, \is_scalar($b) ? (int) $b : 0);
         }
-        return \strcmp((string) $a, \is_string($b) ? $b : (string) $b);
+        $bStr = \is_string($b) ? $b : (\is_scalar($b) ? (string) $b : '');
+        return \strcmp((string) $a, $bStr);
     }
 
     /** Native string-keyed types return keys as strings even when numeric. */

@@ -226,8 +226,10 @@ signatureParity();
 
 $intTypes    = ['BITSET' => 1, 'INT_TO_INT' => 2, 'INT_TO_MIXED' => 3, 'INT_TO_PACKED' => 6];
 $stringTypes = ['STRING_TO_INT' => 4, 'STRING_TO_MIXED' => 5, 'STRING_TO_MIXED_HASH' => 7,
-                'STRING_TO_INT_HASH' => 8, 'STRING_TO_MIXED_ADAPTIVE' => 9, 'STRING_TO_INT_ADAPTIVE' => 10,
-                'STRING_TO_ENTRY' => 11];
+                'STRING_TO_INT_HASH' => 8, 'STRING_TO_MIXED_ADAPTIVE' => 9, 'STRING_TO_INT_ADAPTIVE' => 10];
+if (defined('Judy::STRING_TO_ENTRY') && method_exists(NATIVE, 'getEntry')) {
+    $stringTypes['STRING_TO_ENTRY'] = 11;
+}
 
 /* ── Integer-keyed scenarios ─────────────────────────────────── */
 
