@@ -186,7 +186,7 @@ jobs:
         run: |
           curl --retry 5 --retry-delay 2 --retry-max-time 60 --retry-all-errors --retry-connrefused -fsSL https://github.com/php/pie/releases/latest/download/pie.phar \
             -o /usr/local/bin/pie && chmod +x /usr/local/bin/pie
-          sudo pie install orieg/judy
+          for i in 1 2 3; do sudo pie install orieg/judy && break || sleep 5; done
           php -r 'echo "ext-judy ", judy_version(), PHP_EOL;'
       - name: Parity tests (polyfill vs native)
         run: php tests/parity.php
