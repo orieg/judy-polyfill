@@ -587,4 +587,36 @@ class JudyTest extends TestCase
         $params = $ref->getParameters();
         $this->assertFalse($params[2]->getDefaultValue());
     }
+
+    /**
+     * Requiring the Composer autoloader must NOT compile src/Judy.php.
+     *
+     * This is what makes mutation testing possible. Infection swaps the file in
+     * at include time, and vendor/bin/phpunit requires vendor/autoload.php to
+     * boot itself — so anything that loads the class from the autoloader puts
+     * the ORIGINAL code in memory before Infection can intercept it. That is
+     * not a visible failure: the suite stays green for every mutant and MSI
+     * reports 0%, which reads like "the tests are worthless" rather than "the
+     * measurement is broken". It cost a nightly-failure issue to find once.
+     *
+     * A subprocess is the only place to observe this: by the time any test in
+     * this class runs, the class is loaded by definition.
+     */
+    public function testAutoloaderDoesNotEagerlyLoadTheClass(): void
+    {
+        $autoload = \dirname(__DIR__) . '/vendor/autoload.php';
+        $this->assertFileExists($autoload);
+
+        $code = 'require ' . \var_export($autoload, true) . ';'
+            . ' echo class_exists(' . \var_export(Judy::class, true) . ', false) ? "EAGER" : "LAZY";';
+
+        $output = \shell_exec(\escapeshellarg(PHP_BINARY) . ' -r ' . \escapeshellarg($code) . ' 2>&1');
+
+        $this->assertSame(
+            'LAZY',
+            \trim((string) $output),
+            'src/bootstrap.php must not force the polyfill class to load from the autoloader; '
+            . 'doing so silently reduces Infection MSI to 0%.'
+        );
+    }
 }
