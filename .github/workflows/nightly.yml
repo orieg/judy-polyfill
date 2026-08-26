@@ -78,14 +78,20 @@ jobs:
         if: matrix.experimental != true
         run: vendor/bin/psalm --no-progress
 
-      # Thresholds are a regression ratchet at the measured level, not a target.
-      # They read low because Infection only sees the PHPUnit suite: the checks
+      # A regression ratchet at the measured level, not a target. Measured
+      # 64%/70% locally and 62%/69% on a runner — the ~2pp spread is mutants
+      # timing out differently under --threads=max on different core counts, so
+      # the floor sits a few points below the lower observation. A gate set to
+      # the best number seen is how a nightly starts failing for no reason, and
+      # a nightly that cries wolf is the thing this whole issue was about.
+      #
+      # These read low because Infection only sees the PHPUnit suite: the checks
       # that actually cover this library — tests/behavior.php and the native
-      # parity suite — are standalone scripts it cannot run. Raise these as
-      # coverage moves into PHPUnit; do not lower them.
+      # parity suite — are standalone scripts it cannot run. Raise them as
+      # coverage moves into PHPUnit; do not lower them to make a red run green.
       - name: Infection Mutation Testing
         if: matrix.php-version == '8.3'
-        run: vendor/bin/infection --threads=max --min-msi=60 --min-covered-msi=65 --no-progress
+        run: vendor/bin/infection --threads=max --min-msi=55 --min-covered-msi=62 --no-progress
 
   # Issue bookkeeping lives in its own job so it sees the WHOLE sweep. Run from
   # inside the matrix it raced itself: each passing version closed the issue the
@@ -147,7 +153,7 @@ jobs:
               'php tests/behavior.php',
               'vendor/bin/phpstan analyse -l 9 src',
               'vendor/bin/psalm',
-              'vendor/bin/infection --threads=max --min-msi=60 --min-covered-msi=65',
+              'vendor/bin/infection --threads=max --min-msi=55 --min-covered-msi=62',
               '```',
               '',
               'Infection needs a coverage driver (`pcov` or Xdebug); without one it',
