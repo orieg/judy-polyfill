@@ -72,7 +72,11 @@ jobs:
       - name: Resilient Composer install
         run: |
           composer validate --strict
-          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
+          for attempt in 1 2 3; do
+            if composer install --no-interaction --no-progress --prefer-dist; then break; fi
+            if [ "$attempt" -eq 3 ]; then echo "::error::composer install failed after 3 attempts"; exit 1; fi
+            sleep 5
+          done
       - name: PHPUnit test suite
         run: vendor/bin/phpunit || phpunit
       - name: Behavior tests (standalone script)
@@ -101,7 +105,11 @@ jobs:
             composer-${{ runner.os }}-
       - name: Resilient Composer install
         run: |
-          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
+          for attempt in 1 2 3; do
+            if composer install --no-interaction --no-progress --prefer-dist; then break; fi
+            if [ "$attempt" -eq 3 ]; then echo "::error::composer install failed after 3 attempts"; exit 1; fi
+            sleep 5
+          done
       - name: PHPStan Analysis (Level 9)
         run: |
           echo "### PHPStan Static Analysis (Level 9)" >> "$GITHUB_STEP_SUMMARY"
@@ -144,7 +152,11 @@ jobs:
             composer-${{ runner.os }}-
       - name: Resilient Composer install
         run: |
-          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
+          for attempt in 1 2 3; do
+            if composer install --no-interaction --no-progress --prefer-dist; then break; fi
+            if [ "$attempt" -eq 3 ]; then echo "::error::composer install failed after 3 attempts"; exit 1; fi
+            sleep 5
+          done
       - name: Run Infection Mutation Testing
         run: |
           echo "## 🧬 Infection Mutation Testing Summary" >> "$GITHUB_STEP_SUMMARY"
@@ -181,12 +193,20 @@ jobs:
             composer-${{ runner.os }}-
       - name: Resilient Composer install
         run: |
-          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
+          for attempt in 1 2 3; do
+            if composer install --no-interaction --no-progress --prefer-dist; then break; fi
+            if [ "$attempt" -eq 3 ]; then echo "::error::composer install failed after 3 attempts"; exit 1; fi
+            sleep 5
+          done
       - name: Install ext-judy via PIE (default = bundled libJudy)
         run: |
           curl --retry 5 --retry-delay 2 --retry-max-time 60 --retry-all-errors --retry-connrefused -fsSL https://github.com/php/pie/releases/latest/download/pie.phar \
             -o /usr/local/bin/pie && chmod +x /usr/local/bin/pie
-          for i in 1 2 3; do sudo pie install orieg/judy && break || sleep 5; done
+          for attempt in 1 2 3; do
+            if sudo pie install orieg/judy; then break; fi
+            if [ "$attempt" -eq 3 ]; then echo "::error::pie install failed after 3 attempts"; exit 1; fi
+            sleep 5
+          done
           php -r 'echo "ext-judy ", judy_version(), PHP_EOL;'
       - name: Parity tests (polyfill vs native)
         run: php tests/parity.php
@@ -230,7 +250,11 @@ jobs:
             composer-${{ runner.os }}-
       - name: Resilient Composer install
         run: |
-          for i in 1 2 3; do composer install --no-interaction --prefer-dist && break || sleep 5; done
+          for attempt in 1 2 3; do
+            if composer install --no-interaction --no-progress --prefer-dist; then break; fi
+            if [ "$attempt" -eq 3 ]; then echo "::error::composer install failed after 3 attempts"; exit 1; fi
+            sleep 5
+          done
       - name: Build ext-judy ${{ matrix.ext-version }}
         run: |
           sudo apt-get update && sudo apt-get install -y libjudy-dev
