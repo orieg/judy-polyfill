@@ -129,8 +129,12 @@ jobs:
             exit 1
           fi
 
+  # Advisory only: the run below ends in `|| true` and reports to the step
+  # summary. The enforced threshold lives in the nightly sweep. The old name
+  # claimed a gate of 90% that this job does not apply and that the nightly
+  # never met — the score it gated read 0% until the eager-autoload fix.
   mutation-testing:
-    name: Mutation Testing (Infection MSI >= 90%)
+    name: Mutation Testing (Infection, advisory)
     needs: [detect-changes]
     if: needs.detect-changes.outputs.code == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
